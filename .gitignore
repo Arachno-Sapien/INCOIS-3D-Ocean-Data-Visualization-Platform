@@ -86,9 +86,9 @@ secrets.json
 
 # Local assistant & IDE configurations with local machine-specific states
 *.local.json
-.claude/settings.local.json
+.claude/
 .claude/local/
-.kiro/local/
+.kiro
 
 # ------------------------------------------------------------------------------
 # Operating System Files

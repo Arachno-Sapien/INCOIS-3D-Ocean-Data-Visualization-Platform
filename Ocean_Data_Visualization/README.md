@@ -93,7 +93,10 @@ Ocean_Data_Visualization/
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/siddharthr21/Ocean_Data_Visualization.git
+For version 1: git clone https://github.com/siddharthr21/Ocean_Data_Visualization.git
+
+For version 2: git clone https://github.com/Arachno-Sapien/INCOIS-3D-Ocean-Data-Visualization-Platform.git
+
 cd Ocean_Data_Visualization
 
 # 2. Start the dev server, then open http://localhost:8791
