@@ -88,7 +88,8 @@ secrets.json
 *.local.json
 .claude/
 .claude/local/
-.kiro
+.kiro/
+.agents/
 
 # ------------------------------------------------------------------------------
 # Operating System Files
@@ -169,5 +170,6 @@ raw_data/
 temp_data/
 
 # Explicitly ensure bundled production data assets are tracked
-!Ocean_Data_Visualization/js/data/argo.json
-!Ocean_Data_Visualization/assets/*
+!js/data/argo.json
+!assets/*
+
