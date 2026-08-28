@@ -1,0 +1,14 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ocean3d",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "Ocean_Data_Visualization/serve.py"
+      ],
+      "port": 8791,
+      "autoPort": true
+    }
+  ]
+}

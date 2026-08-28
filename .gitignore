@@ -1,0 +1,173 @@
+# ==============================================================================
+# Git Ignore Configuration - SIH 2026 / INCOIS Ocean Data Visualization
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Python & Bytecode
+# ------------------------------------------------------------------------------
+__pycache__/
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+bin/
+include/
+lib/
+lib64/
+
+# Distribution / Packaging / Build
+build/
+dist/
+eggs/
+.eggs/
+*.egg-info/
+*.egg
+develop-eggs/
+downloads/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.manifest
+*.spec
+
+# Testing, Coverage & Quality Checks
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# ------------------------------------------------------------------------------
+# Node.js & Web Assets (if tooling/bundlers are introduced)
+# ------------------------------------------------------------------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.pnpm-store/
+.parcel-cache/
+.eslintcache/
+
+# ------------------------------------------------------------------------------
+# Environment Variables, Secrets & Local Overrides
+# ------------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+!.env.template
+*.pem
+*.key
+*.cert
+credentials.json
+token.json
+secrets.json
+
+# Local assistant & IDE configurations with local machine-specific states
+*.local.json
+.claude/settings.local.json
+.claude/local/
+.kiro/local/
+
+# ------------------------------------------------------------------------------
+# Operating System Files
+# ------------------------------------------------------------------------------
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+
+# ------------------------------------------------------------------------------
+# IDEs & Code Editors
+# ------------------------------------------------------------------------------
+# JetBrains (PyCharm, WebStorm, etc.)
+.idea/
+*.iws
+*.iml
+*.ipr
+out/
+
+# VS Code (ignore workspace state, keep shared settings if needed)
+.vscode/*.log
+.vscode/.browse.c_cpp.db*
+
+# Sublime Text
+*.sublime-workspace
+*.sublime-project
+
+# Vim / Emacs
+*.swp
+*.swo
+*.swn
+[._]*.un~
+#*#
+.#*
+
+# ------------------------------------------------------------------------------
+# Logs, Temp & Cache Files
+# ------------------------------------------------------------------------------
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.orig
+.cache/
+
+# ------------------------------------------------------------------------------
+# Oceanography / Large Raw Data Files (Keep bundled sample data like js/data/argo.json)
+# ------------------------------------------------------------------------------
+# Raw heavy oceanographic data extracts (NetCDF, HDF, raw binary)
+*.nc
+*.nc4
+*.hdf
+*.hdf5
+*.h5
+*.grb
+*.grb2
+*.grib
+data_cache/
+raw_data/
+temp_data/
+
+# Explicitly ensure bundled production data assets are tracked
+!Ocean_Data_Visualization/js/data/argo.json
+!Ocean_Data_Visualization/assets/*

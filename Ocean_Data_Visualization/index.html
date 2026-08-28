@@ -1,0 +1,1546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>INCOIS — 3D Ocean Data Visualization</title>
+  <meta name="description" content="Browser-native 3D visualization of INCOIS ocean model fields co-displayed with Argo, glider, CTD and BGC profiles across the Indian EEZ.">
+
+  <!-- Inline so it needs no asset request and cannot 404 -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2303101a'/%3E%3Cg fill='none' stroke='%2363e6be' stroke-width='2.4' stroke-linecap='round'%3E%3Cpath d='M5 12c2.7-2.6 5.3-2.6 8 0s5.3 2.6 8 0'/%3E%3Cpath d='M5 18c2.7-2.6 5.3-2.6 8 0s5.3 2.6 8 0' opacity='.7'/%3E%3Cpath d='M5 24c2.7-2.6 5.3-2.6 8 0s5.3 2.6 8 0' opacity='.4'/%3E%3C/g%3E%3C/svg%3E">
+
+  <!--
+    IMPORTMAP — must appear before any <script type="module">.
+    Maps the bare specifier "three" that OrbitControls.js uses internally.
+    To swap Three.js version: change the two URLs here only.
+  -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+      "three/examples/jsm/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <!--
+    Type: Outfit (display) / Geist (UI) / IBM Plex Mono (all numerics).
+    Plex Mono carries the survey-instrument register and gives real tabular
+    figures, which matters when readouts change under a slider.
+  -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Geist:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <!-- Phosphor icons, so no glyph is a hand-drawn path or an emoji -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@phosphor-icons/web@2.1.1/src/duotone/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@phosphor-icons/web@2.1.1/src/regular/style.css">
+
+  <style>
+    /* ================================================================
+       CSS RESET & TOKENS
+    ================================================================ */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      /* ── Bathymetric surface ramp ──────────────────────────────────
+         Named for the ocean's actual light zones rather than a generic
+         grey scale, and tinted green-blue throughout so every surface
+         belongs to one water column. No pure black anywhere.          */
+      --abyssal:  #03101a;   /* below 4000 m - page ground              */
+      --midnight: #061a27;   /* 1000-4000 m - deepest panel fill        */
+      --twilight: #0a2534;   /* 200-1000 m  - raised surface            */
+      --sunlit:   #10394b;   /* 0-200 m     - highest surface, hairlines*/
+
+      /* ── Single chrome accent ──────────────────────────────────────
+         Bioluminescent seafoam. Deliberately not #22d3ee: that exact
+         cyan is the default dark-tech accent and reads as generic.    */
+      --lumen:      #63e6be;
+      --lumen-dim:  rgba(99, 230, 190, 0.42);
+      --lumen-haze: rgba(99, 230, 190, 0.09);
+
+      /* ── Data colours ──────────────────────────────────────────────
+         These are NOT chrome. Each encodes an instrument class and is
+         the same hue as its 3D marker, so they are exempt from the
+         one-accent rule. Never reuse them for UI decoration.          */
+      --data-argo:    #38bdf8;
+      --data-glider:  #a78bfa;
+      --data-ctd:     #2dd4bf;
+      --data-bgc:     #fb923c;
+      --data-mooring: #f472b6;
+      --warning:      #ff8a5c;
+
+      /* Panels sit in the water column, not on frosted glass */
+      --panel-bg:      rgba(6, 26, 39, 0.82);
+      --panel-edge:    rgba(120, 190, 200, 0.14);
+      --panel-inner:   rgba(190, 245, 235, 0.07);  /* top-edge refraction */
+      --hairline:      rgba(120, 190, 200, 0.10);
+      --blur:          16px;
+
+      --text-primary:   #dff0ef;
+      --text-secondary: rgba(223, 240, 239, 0.58);
+      --text-muted:     rgba(223, 240, 239, 0.34);
+
+      --panel-w: 264px;
+      --topbar-h: 54px;
+      --bottombar-h: 72px;
+
+      /* Radius scale: containers soft, inner controls tight, pills full.
+         One documented rule, applied everywhere. */
+      --r-container: 14px;
+      --r-control:   7px;
+      --r-pill:      100px;
+
+      /* Shadows carry the water hue instead of neutral black */
+      --shadow-panel: 0 18px 44px rgba(2, 10, 18, 0.62);
+      --shadow-press: inset 0 1px 0 var(--panel-inner);
+
+      --font-display: 'Outfit', 'Segoe UI', sans-serif;
+      --font-body:    'Geist', 'Outfit', system-ui, sans-serif;
+      --font-mono:    'IBM Plex Mono', ui-monospace, monospace;
+
+      --transition: 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+
+      /* z-index scale, so no component invents its own 9999 */
+      --z-canvas: 0;
+      --z-ambient: 5;
+      --z-hud: 40;
+      --z-panel: 50;
+      --z-topbar: 100;
+      --z-grain: 60;
+      --z-overlay: 200;
+    }
+
+    html, body {
+      width: 100%; height: 100%;
+      overflow: hidden;
+      background: var(--abyssal);
+      color: var(--text-primary);
+      font-family: var(--font-body);
+      font-size: 13px;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Every numeric readout aligns column-wise as values change */
+    .ctrl-readout, .tick-label, #colorbar-label, .system-badge,
+    #scale-badge, .meta-item, input[type="number"], input[type="date"] {
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ================================================================
+       AMBIENT DEPTH — the page ground reads as a water column even
+       where the WebGL canvas is empty, so the UI never floats on a
+       flat rectangle.
+    ================================================================ */
+    #ambient {
+      position: fixed; inset: 0;
+      pointer-events: none;
+      z-index: var(--z-ambient);
+      background:
+        radial-gradient(120% 68% at 50% -14%, rgba(99, 230, 190, 0.11), transparent 62%),
+        radial-gradient(90% 55% at 12% 108%, rgba(56, 189, 248, 0.09), transparent 68%),
+        linear-gradient(180deg, transparent 42%, rgba(3, 16, 26, 0.72) 100%);
+    }
+
+    /* Fixed, pointer-events-none, never on a scrolling container:
+       a scrolling grain layer forces continuous GPU repaints. */
+    #grain {
+      position: fixed; inset: 0;
+      pointer-events: none;
+      z-index: var(--z-grain);
+      opacity: 0.16;
+      mix-blend-mode: overlay;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='0.42'/%3E%3C/svg%3E");
+    }
+
+    /* ================================================================
+       LAYOUT SHELL
+    ================================================================ */
+    #app {
+      position: fixed; inset: 0;
+      display: grid;
+      grid-template-rows: var(--topbar-h) 1fr var(--bottombar-h);
+      grid-template-columns: 1fr;
+    }
+
+    /* ── Three.js canvas ── */
+    #ocean-canvas {
+      position: fixed; inset: 0;
+      width: 100%; height: 100%;
+      display: block;
+      z-index: 0;
+    }
+
+    /* ================================================================
+       TOP BAR
+    ================================================================ */
+    #top-bar {
+      position: fixed; top: 0; left: 0; right: 0;
+      height: var(--topbar-h);
+      display: flex; align-items: center; gap: 16px;
+      padding: 0 18px;
+      background: linear-gradient(180deg, rgba(3, 16, 26, 0.94) 62%, rgba(3, 16, 26, 0.55));
+      z-index: var(--z-topbar);
+      border-bottom: 1px solid var(--hairline);
+      backdrop-filter: blur(10px) saturate(130%);
+      -webkit-backdrop-filter: blur(10px) saturate(130%);
+    }
+
+    /* Tactile press feedback across every control */
+    .tab-btn:active, .tl-btn:active, .scale-btn:active,
+    #profile-close:active, .panel-header:active { transform: scale(0.97); }
+
+    /* Anything above MOTION_INTENSITY 3 must collapse under reduced motion */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+
+    .brand {
+      display: flex; align-items: center; gap: 10px;
+      flex-shrink: 0;
+    }
+
+    /* The INCOIS seal is a light circular mark on transparency. It carries its
+       own field, so it needs no plate behind it — the seafoam gradient that sat
+       here would fight the mark's own colours. Sized for a 2x display from a
+       96px source. */
+    .brand-logo {
+      width: 34px; height: 34px;
+      flex-shrink: 0;
+      object-fit: contain;
+      /* Lifts the seal off the dark bar without adding a visible container */
+      filter: drop-shadow(0 1px 3px rgba(2, 10, 18, 0.55));
+    }
+
+    .brand-text {
+      display: flex; flex-direction: column;
+    }
+
+    .brand-name {
+      font-family: var(--font-display);
+      font-size: 14px; font-weight: 700;
+      color: var(--lumen);
+      letter-spacing: 0.04em;
+      line-height: 1;
+    }
+
+    .brand-sub {
+      font-size: 10px;
+      color: var(--text-muted);
+      letter-spacing: 0.06em;
+      font-family: var(--font-mono);
+      line-height: 1.2;
+    }
+
+    .divider-v {
+      width: 1px; height: 28px;
+      background: var(--panel-edge);
+      flex-shrink: 0;
+    }
+
+    /* Tab bar */
+    #tab-bar {
+      display: flex; gap: 4px;
+      overflow-x: auto;
+    }
+
+    #tab-bar::-webkit-scrollbar { display: none; }
+
+    .tab-btn {
+      padding: 6px 14px;
+      border-radius: 100px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text-secondary);
+      font-family: var(--font-body);
+      font-size: 12px; font-weight: 500;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all var(--transition);
+    }
+
+    .tab-btn:hover {
+      color: var(--text-primary);
+      background: var(--lumen-haze);
+      border-color: var(--panel-edge);
+    }
+
+    .tab-btn.active {
+      color: var(--abyssal);
+      background: var(--lumen);
+      border-color: var(--lumen);
+      font-weight: 600;
+    }
+
+    .top-right {
+      margin-left: auto;
+      display: flex; align-items: center; gap: 10px;
+    }
+
+    #export-btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 5px 11px 5px 9px;
+      background: var(--lumen-haze);
+      border: 1px solid var(--panel-edge);
+      border-radius: var(--r-pill);
+      color: var(--text-primary);
+      font-family: var(--font-body);
+      font-size: 11px; font-weight: 500;
+      white-space: nowrap; cursor: pointer;
+      transition: all var(--transition);
+    }
+    #export-btn i { font-size: 14px; color: var(--lumen); }
+    #export-btn:hover { border-color: var(--lumen-dim); }
+    #export-btn:active { transform: scale(0.97); }
+    #export-btn:focus-visible { outline: 2px solid var(--lumen); outline-offset: 2px; }
+    #export-btn.done { border-color: var(--lumen); color: var(--lumen); }
+    #export-btn.done span::after { content: 'ed'; }
+    @media (max-width: 1000px) { #export-btn span { display: none; } }
+
+    .system-badge {
+      font-family: var(--font-mono);
+      font-size: 9px;
+      color: var(--lumen);
+      padding: 3px 8px;
+      border: 1px solid rgba(45,212,191,0.25);
+      border-radius: 4px;
+      letter-spacing: 0.1em;
+    }
+
+    /* ================================================================
+       FLOATING PANELS (shared glass morphism)
+    ================================================================ */
+    .panel {
+      position: fixed;
+      background:
+        linear-gradient(180deg, rgba(16, 57, 75, 0.42), transparent 38%),
+        var(--panel-bg);
+      border: 1px solid var(--panel-edge);
+      border-radius: var(--r-container);
+      backdrop-filter: blur(var(--blur)) saturate(135%);
+      -webkit-backdrop-filter: blur(var(--blur)) saturate(135%);
+      /* Inner top highlight + tinted drop: the edge catches light the way a
+         submerged surface does, rather than reading as a flat blurred box. */
+      box-shadow: var(--shadow-press), var(--shadow-panel);
+      z-index: var(--z-panel);
+      overflow: hidden;
+      transition: width var(--transition), opacity var(--transition), transform var(--transition);
+    }
+
+    /* Panels are not mirror images of each other. The console is the primary
+       instrument surface and carries a lit leading edge; the layer rail is a
+       quieter secondary surface. */
+    #controls-panel::before {
+      content: '';
+      position: absolute; left: 0; top: 14px; bottom: 14px;
+      width: 2px;
+      border-radius: 2px;
+      background: linear-gradient(180deg, transparent, var(--lumen), transparent);
+      opacity: 0.55;
+    }
+
+    #layers-panel {
+      background: var(--panel-bg);
+      box-shadow: var(--shadow-panel);
+    }
+
+    @media (prefers-reduced-transparency: reduce) {
+      .panel { background: #061a27; backdrop-filter: none; -webkit-backdrop-filter: none; }
+    }
+
+    .panel.collapsed .panel-body {
+      display: none;
+    }
+
+    .panel-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--panel-edge);
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .panel-title {
+      font-family: var(--font-display);
+      font-size: 12px; font-weight: 600;
+      color: var(--lumen);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      display: flex; align-items: center; gap: 6px;
+    }
+
+    .panel-toggle-icon {
+      width: 16px; height: 16px;
+      color: var(--text-muted);
+      transition: transform var(--transition);
+      flex-shrink: 0;
+    }
+
+    .panel.collapsed .panel-toggle-icon {
+      transform: rotate(180deg);
+    }
+
+    .panel-body {
+      padding: 12px;
+      display: flex; flex-direction: column; gap: 10px;
+      max-height: calc(100vh - var(--topbar-h) - var(--bottombar-h) - 80px);
+      overflow-y: auto;
+    }
+
+    .panel-body::-webkit-scrollbar { width: 4px; }
+    .panel-body::-webkit-scrollbar-track { background: transparent; }
+    .panel-body::-webkit-scrollbar-thumb { background: rgba(34,211,238,0.2); border-radius: 2px; }
+
+    /* The two panels are deliberately NOT mirror images. The console is the
+       primary working surface: wider, anchored to the top, lit leading edge.
+       The layer rail is secondary: narrower, dropped down the viewport, quieter
+       fill. Twinned panels either side of the canvas is the stock dashboard
+       composition and the thing that makes the layout read as templated. */
+
+    /* ── Console — left, primary ── */
+    #controls-panel {
+      top: calc(var(--topbar-h) + 12px);
+      left: 16px;
+      width: var(--panel-w);
+    }
+
+    /* ── Layer rail — right, secondary and offset ── */
+    #layers-panel {
+      top: calc(var(--topbar-h) + 74px);
+      right: 16px;
+      width: 208px;
+    }
+
+    #layers-panel .panel-header {
+      border-bottom-color: var(--hairline);
+    }
+
+    #layers-panel .panel-title {
+      color: var(--text-secondary);
+      font-size: 11px;
+    }
+
+    @media (max-height: 780px) {
+      #layers-panel { top: calc(var(--topbar-h) + 12px); }
+    }
+
+    /* ================================================================
+       FORM CONTROLS
+    ================================================================ */
+    .ctrl-group {
+      display: flex; flex-direction: column; gap: 5px;
+    }
+
+    .ctrl-label {
+      font-size: 10px; font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+
+    .ctrl-readout {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--lumen);
+    }
+
+    input[type="range"] {
+      -webkit-appearance: none;
+      width: 100%; height: 4px;
+      background: rgba(99, 230, 190, 0.14);
+      border-radius: 2px;
+      outline: none;
+      cursor: pointer;
+    }
+
+    /* No outer neon glow. The thumb reads as a machined part: a lit cap over
+       a dark seat, with a hue-matched drop rather than a halo. */
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 15px; height: 15px;
+      background: linear-gradient(180deg, #8ff5d6, var(--lumen));
+      border-radius: 50%;
+      border: 2px solid var(--abyssal);
+      cursor: pointer;
+      box-shadow: 0 2px 6px rgba(2, 10, 18, 0.7), inset 0 1px 0 rgba(255,255,255,0.4);
+      transition: transform var(--transition);
+    }
+
+    input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.14); }
+    input[type="range"]:active::-webkit-slider-thumb { transform: scale(0.94); }
+
+    input[type="range"]::-moz-range-thumb {
+      width: 15px; height: 15px;
+      background: var(--lumen);
+      border-radius: 50%;
+      border: 2px solid var(--abyssal);
+      cursor: pointer;
+    }
+
+    input[type="range"]:focus-visible {
+      outline: 2px solid var(--lumen);
+      outline-offset: 3px;
+    }
+
+    select, input[type="text"], input[type="number"], input[type="date"] {
+      width: 100%;
+      background: var(--lumen-haze);
+      border: 1px solid var(--panel-edge);
+      border-radius: var(--r-control);
+      color: var(--text-primary);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      padding: 5px 8px;
+      outline: none;
+      cursor: pointer;
+      transition: border-color var(--transition);
+    }
+
+    /* The open dropdown list is an OS-drawn popup: it does NOT inherit the
+       panel background, only the inherited `color`. Styling the <select> alone
+       leaves light text on the system's white popup, which is unreadable.
+       Both halves of the contrast pair must be set explicitly here. */
+    select option,
+    select optgroup {
+      background-color: #0a2534;      /* literal: the popup cannot read var() reliably */
+      color: #dff0ef;
+      font-family: var(--font-mono);
+    }
+
+    select option:checked,
+    select option:hover {
+      background-color: #12475e;
+      color: #ffffff;
+    }
+
+    select optgroup {
+      color: #7fb6ad;                  /* group headings sit below option text */
+      font-style: normal;
+      font-weight: 600;
+    }
+
+    /* Windows renders the closed control with the system arrow over our fill;
+       supply our own so the affordance matches the panel. */
+    select {
+      -webkit-appearance: none;
+      appearance: none;
+      padding-right: 26px;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' fill='none' stroke='%2363e6be' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 9px center;
+      background-size: 10px 7px;
+    }
+
+    select:focus, input:focus {
+      border-color: var(--lumen);
+    }
+
+    select:focus-visible, input:focus-visible {
+      outline: 2px solid var(--lumen);
+      outline-offset: 2px;
+    }
+
+    .row-2 {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+    }
+
+    .scale-toggle {
+      display: flex; gap: 4px;
+    }
+
+    .scale-btn {
+      flex: 1; padding: 4px 0;
+      background: transparent;
+      border: 1px solid var(--panel-edge);
+      border-radius: 6px;
+      color: var(--text-secondary);
+      font-size: 10px; font-weight: 600;
+      cursor: pointer;
+      letter-spacing: 0.05em;
+      transition: all var(--transition);
+    }
+
+    .scale-btn.active {
+      background: rgba(99, 230, 190, 0.14);
+      border-color: var(--lumen);
+      color: var(--lumen);
+    }
+
+    .section-divider {
+      height: 1px;
+      background: var(--panel-edge);
+      margin: 2px 0;
+    }
+
+    .section-heading {
+      font-size: 9px; font-weight: 700;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+    }
+
+    /* ================================================================
+       LAYERS PANEL
+    ================================================================ */
+    #layers-list {
+      display: flex; flex-direction: column; gap: 6px;
+    }
+
+    .layer-row {
+      display: flex; align-items: center; gap: 8px;
+      cursor: pointer;
+      padding: 5px 6px;
+      border-radius: 6px;
+      transition: background var(--transition);
+    }
+
+    .layer-row:hover { background: var(--lumen-haze); }
+
+    .layer-row input[type="checkbox"] {
+      -webkit-appearance: none;
+      width: 14px; height: 14px;
+      background: var(--lumen-haze);
+      border: 1px solid var(--panel-edge);
+      border-radius: 3px;
+      cursor: pointer;
+      transition: all var(--transition);
+      flex-shrink: 0;
+      position: relative;
+    }
+
+    .layer-row input[type="checkbox"]:checked {
+      background: var(--lumen);
+      border-color: var(--lumen);
+    }
+
+    .layer-row input[type="checkbox"]:checked::after {
+      content: '';
+      position: absolute; top: 2px; left: 4px;
+      width: 4px; height: 7px;
+      border: 2px solid var(--abyssal);
+      border-top: none; border-left: none;
+      transform: rotate(45deg);
+    }
+
+    .layer-row input[type="checkbox"]:focus-visible {
+      outline: 2px solid var(--lumen);
+      outline-offset: 2px;
+    }
+
+    .layer-label {
+      font-size: 11px;
+      color: var(--text-secondary);
+    }
+
+    /* Colour key matching the instrument's 3D marker */
+    /* Marks a layer that is scene-setting rather than a data field, so nobody
+       reads the animated surface as model output. */
+    .layer-note {
+      font-family: var(--font-mono);
+      font-size: 8px;
+      font-style: normal;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      border: 1px solid var(--hairline);
+      border-radius: 3px;
+      padding: 0 3px;
+      margin-left: 6px;
+      vertical-align: 1px;
+    }
+
+    .layer-swatch {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      margin-left: auto;
+      flex-shrink: 0;
+      box-shadow: 0 0 5px currentColor;
+    }
+
+    /* Plugin registry badges */
+    #plugin-registry-list {
+      display: flex; flex-wrap: wrap; gap: 4px;
+      margin-top: 4px;
+    }
+
+    .plugin-badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 2px 7px;
+      border-radius: 100px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.08);
+      font-size: 9px;
+      color: var(--text-secondary);
+      letter-spacing: 0.03em;
+    }
+
+    .plugin-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--color, var(--lumen));
+      flex-shrink: 0;
+    }
+
+    /* ================================================================
+       COLORBAR LEGEND (fixed, bottom-right above timeline)
+    ================================================================ */
+    #colorbar-legend {
+      position: fixed;
+      bottom: calc(var(--bottombar-h) + 14px);
+      right: 14px;
+      width: 200px;
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-edge);
+      border-radius: var(--r-control);
+      backdrop-filter: blur(8px);
+      padding: 8px 10px;
+      z-index: 50;
+    }
+
+    #colorbar-label {
+      font-size: 10px;
+      color: var(--text-secondary);
+      margin-bottom: 5px;
+      font-family: var(--font-mono);
+    }
+
+    /* Scene scale + domain provenance, stated in the view itself */
+    #scale-badge {
+      position: fixed;
+      top: calc(var(--topbar-h) + 14px);
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex; align-items: center; gap: 10px;
+      padding: 5px 12px;
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-edge);
+      border-radius: 999px;
+      backdrop-filter: blur(8px);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.04em;
+      white-space: nowrap;
+      pointer-events: none;
+      z-index: 40;
+    }
+    #scale-badge .badge-exag { color: var(--lumen); }
+    #scale-badge .badge-domain {
+      color: var(--text-secondary);
+      padding-left: 10px;
+      border-left: 1px solid var(--panel-edge);
+    }
+    @media (max-width: 900px) {
+      #scale-badge .badge-domain { display: none; }
+    }
+
+    /* ================================================================
+       VIEW MODE — globe overview vs. depth volume
+    ================================================================ */
+
+    /* On the globe these act on a scene that is not on screen. Hiding beats
+       leaving them enabled and inert. */
+    body.view-globe #controls-panel,
+    body.view-globe #layers-panel,
+    body.view-globe #colorbar-legend,
+    body.view-globe #depth-gauge-wrap,
+    body.view-globe #scale-badge,
+    body.view-globe #bottom-bar { opacity: 0; pointer-events: none; }
+
+    #controls-panel, #layers-panel, #colorbar-legend, #depth-gauge-wrap,
+    #scale-badge, #bottom-bar { transition: opacity 0.5s var(--transition); }
+
+    /* Sits in the top bar flow. Styled as a sibling of the variable tabs but
+       with the accent border, so it reads as "go up a level", not "another
+       tab". Never overlaps a floating panel because it is not positioned. */
+    #back-to-globe {
+      flex-shrink: 0;
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 13px 6px 10px;
+      background: var(--lumen-haze);
+      border: 1px solid var(--lumen-dim);
+      border-radius: var(--r-pill);
+      color: var(--text-primary);
+      font-family: var(--font-body);
+      font-size: 11.5px; font-weight: 500;
+      white-space: nowrap;
+      cursor: pointer;
+      transition: all var(--transition);
+    }
+    #back-to-globe i { font-size: 15px; color: var(--lumen); }
+    #back-to-globe:hover {
+      background: rgba(99, 230, 190, 0.16);
+      border-color: var(--lumen);
+    }
+    #back-to-globe:active { transform: scale(0.97); }
+    #back-to-globe:focus-visible { outline: 2px solid var(--lumen); outline-offset: 2px; }
+    #back-to-globe.hidden { display: none; }
+
+    /* On a narrow bar the label goes; the icon still says "globe" */
+    @media (max-width: 900px) {
+      #back-to-globe span { display: none; }
+      #back-to-globe { padding: 6px 9px; }
+    }
+
+    /* Area selection controls, globe view only */
+    #area-tools {
+      position: fixed;
+      top: calc(var(--topbar-h) + 14px);
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: var(--z-hud);
+      display: flex; align-items: center; gap: 8px;
+      flex-wrap: wrap; justify-content: center;
+    }
+    body:not(.view-globe) #area-tools { display: none; }
+
+    #area-tools button {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 13px 6px 10px;
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-edge);
+      border-radius: var(--r-pill);
+      backdrop-filter: blur(var(--blur));
+      -webkit-backdrop-filter: blur(var(--blur));
+      box-shadow: var(--shadow-press), var(--shadow-panel);
+      color: var(--text-primary);
+      font-family: var(--font-body);
+      font-size: 11.5px; font-weight: 500;
+      white-space: nowrap;
+      cursor: pointer;
+      transition: all var(--transition);
+    }
+    #area-tools button i { font-size: 15px; color: var(--lumen); }
+    #area-tools button:hover { border-color: var(--lumen-dim); transform: translateY(-1px); }
+    #area-tools button:active { transform: scale(0.97); }
+    #area-tools button:focus-visible { outline: 2px solid var(--lumen); outline-offset: 2px; }
+    #area-tools button.hidden { display: none; }
+
+    /* Armed: the next drag draws a box. Uses the selection hue, not the app
+       accent, so it matches the box being drawn on the globe. */
+    #area-select-btn.armed {
+      background: rgba(255, 209, 102, 0.16);
+      border-color: #ffd166;
+      color: #ffd166;
+    }
+    #area-select-btn.armed i { color: #ffd166; }
+
+    #area-readout {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.03em;
+      color: #ffd166;
+      background: rgba(255, 209, 102, 0.10);
+      border: 1px solid rgba(255, 209, 102, 0.32);
+      border-radius: var(--r-pill);
+      padding: 5px 11px;
+      white-space: nowrap;
+    }
+    #area-readout.hidden { display: none; }
+
+    /* Crosshair while armed, so the globe reads as a selectable surface */
+    body.area-arming #ocean-canvas { cursor: crosshair; }
+
+    #globe-hint {
+      position: fixed;
+      left: 50%; bottom: 30px;
+      transform: translateX(-50%);
+      z-index: var(--z-hud);
+      display: inline-flex; align-items: center; gap: 8px;
+      max-width: min(92vw, 560px);
+      padding: 9px 16px;
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-edge);
+      border-radius: var(--r-pill);
+      backdrop-filter: blur(var(--blur));
+      -webkit-backdrop-filter: blur(var(--blur));
+      color: var(--text-secondary);
+      font-size: 11.5px;
+      text-align: center;
+      pointer-events: none;
+    }
+    #globe-hint i { font-size: 15px; color: var(--lumen); flex-shrink: 0; }
+    #globe-hint.hidden { display: none; }
+
+    /* Vector glyph key: length is meaningless without a stated reference */
+    #vector-key {
+      margin-top: 6px;
+      padding-top: 6px;
+      border-top: 1px solid var(--hairline);
+      font-family: var(--font-mono);
+      font-size: 9px;
+      line-height: 1.5;
+      color: var(--text-secondary);
+    }
+    #vector-key.hidden { display: none; }
+
+    #tchp-key {
+      margin-top: 6px; padding-top: 6px;
+      border-top: 1px solid var(--hairline);
+      font-family: var(--font-mono); font-size: 9px; line-height: 1.5;
+      color: var(--text-secondary);
+    }
+    #tchp-key.hidden { display: none; }
+    #tchp-key b { color: var(--warning); font-weight: 600; }
+    #vector-key .vk-arrow { color: var(--lumen); letter-spacing: -0.05em; }
+
+    /* Advisory text under a control */
+    .ctrl-note {
+      margin-top: 5px;
+      font-size: 9.5px;
+      line-height: 1.45;
+      color: var(--text-secondary);
+    }
+    .ctrl-note:empty { display: none; }
+    .ctrl-note.warn { color: var(--warning); }
+
+    #colorbar-canvas {
+      width: 100%; height: 34px;
+      border-radius: 4px;
+      display: block;
+    }
+
+    /* ================================================================
+       DEPTH GAUGE — Signature Element (bottom-left)
+    ================================================================ */
+    #depth-gauge-wrap {
+      position: fixed;
+      bottom: calc(var(--bottombar-h) + 10px);
+      left: 14px;
+      width: 130px; height: 130px;
+      z-index: 50;
+    }
+
+    #depth-gauge-canvas {
+      width: 100%; height: 100%;
+      display: block;
+    }
+
+    /* ================================================================
+       BOTTOM TIMELINE BAR
+    ================================================================ */
+    #bottom-bar {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      height: var(--bottombar-h);
+      background: linear-gradient(0deg, rgba(5,11,24,0.98) 60%, transparent);
+      border-top: 1px solid var(--panel-edge);
+      backdrop-filter: blur(8px);
+      z-index: 100;
+      display: flex; align-items: center; gap: 14px;
+      padding: 0 16px;
+    }
+
+    #timeline-controls {
+      display: flex; align-items: center; gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .tl-btn {
+      width: 34px; height: 34px;
+      background: rgba(34,211,238,0.1);
+      border: 1px solid var(--panel-edge);
+      border-radius: 8px;
+      color: var(--lumen);
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: all var(--transition);
+      flex-shrink: 0;
+    }
+
+    .tl-btn:hover {
+      background: rgba(34,211,238,0.2);
+      border-color: var(--lumen);
+    }
+
+    .tl-btn:focus-visible {
+      outline: 2px solid var(--lumen);
+      outline-offset: 2px;
+    }
+
+    .tl-btn svg { width: 14px; height: 14px; }
+
+    #timeline-speed-btn {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 600;
+    }
+
+    #timeline-track {
+      flex: 1;
+      display: flex; gap: 6px; align-items: flex-end;
+      height: 48px; padding: 8px 0;
+      overflow-x: auto;
+    }
+
+    #timeline-track::-webkit-scrollbar { display: none; }
+
+    .timeline-tick {
+      display: flex; flex-direction: column; align-items: center; gap: 3px;
+      cursor: pointer;
+      flex: 1; min-width: 48px;
+      transition: all var(--transition);
+    }
+
+    .tick-bar {
+      width: 3px; height: 14px;
+      background: rgba(99, 230, 190, 0.24);
+      border-radius: 2px;
+      transition: all var(--transition);
+    }
+
+    .timeline-tick.active .tick-bar {
+      background: var(--lumen);
+      height: 22px;
+      box-shadow: 0 0 8px var(--lumen);
+    }
+
+    .tick-label {
+      font-family: var(--font-mono);
+      font-size: 9px;
+      color: var(--text-muted);
+      transition: color var(--transition);
+    }
+
+    .timeline-tick.active .tick-label {
+      color: var(--lumen);
+    }
+
+    .timeline-tick:hover .tick-bar {
+      background: var(--lumen);
+      height: 18px;
+    }
+
+    /* ================================================================
+       PROFILE PANEL (floating, right side, on marker click)
+    ================================================================ */
+    #profile-panel {
+      position: fixed;
+      top: calc(var(--topbar-h) + 12px);
+      right: calc(220px + 26px); /* layersPanel + gap */
+      width: 300px;
+      z-index: 60;
+      transition: opacity var(--transition), transform var(--transition);
+    }
+
+    #profile-panel.hidden {
+      opacity: 0;
+      pointer-events: none;
+      transform: translateX(20px);
+    }
+
+    #profile-close {
+      background: transparent; border: none;
+      color: var(--text-muted);
+      cursor: pointer; font-size: 16px; line-height: 1;
+      padding: 2px 4px;
+      border-radius: 4px;
+      transition: color var(--transition);
+    }
+
+    #profile-close:hover { color: var(--text-primary); }
+
+    #profile-title {
+      font-family: var(--font-display);
+      font-size: 13px; font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    #profile-meta {
+      display: flex; flex-wrap: wrap; gap: 6px;
+      padding: 0 12px 8px;
+    }
+
+    .meta-item {
+      display: inline-flex; align-items: center; gap: 5px;
+      font-family: var(--font-mono);
+      font-size: 9.5px;
+      color: var(--text-secondary);
+      background: var(--lumen-haze);
+      border: 1px solid var(--panel-edge);
+      border-radius: var(--r-control);
+      padding: 3px 7px;
+    }
+
+    .meta-item i { font-size: 12px; color: var(--lumen); }
+
+    /* Real observation vs synthetic, distinguished by more than wording */
+    .meta-item.is-real {
+      border-color: var(--lumen-dim);
+      color: var(--lumen);
+    }
+    .meta-item.is-mock {
+      border-color: rgba(255,138,92,0.35);
+      color: var(--warning);
+    }
+    .meta-item.is-mock i { color: var(--warning); }
+
+    .system-badge.is-real {
+      color: var(--lumen);
+      border-color: var(--lumen-dim);
+      background: var(--lumen-haze);
+    }
+
+    /* A variable whose levels were all rejected by QC */
+    .var-btn.depleted {
+      opacity: 0.45;
+      text-decoration: line-through;
+      text-decoration-color: var(--warning);
+    }
+
+    #profile-var-toggle {
+      display: flex; gap: 4px;
+      padding: 0 12px 8px;
+    }
+
+    .var-btn {
+      flex: 1; padding: 4px 0;
+      background: transparent;
+      border: 1px solid var(--panel-edge);
+      border-radius: 6px;
+      color: var(--text-secondary);
+      font-size: 9px; font-weight: 600;
+      cursor: pointer; letter-spacing: 0.04em;
+      transition: all var(--transition);
+      font-family: var(--font-body);
+      text-transform: uppercase;
+    }
+
+    .var-btn.active {
+      background: rgba(99, 230, 190, 0.14);
+      border-color: var(--lumen);
+      color: var(--lumen);
+    }
+
+    #profile-chart-canvas {
+      display: block;
+      width: 100%; height: 260px;
+      border-radius: 0 0 var(--r-container) var(--r-container);
+    }
+
+    /* ================================================================
+       LOADING OVERLAY
+    ================================================================ */
+    #loading-overlay {
+      position: fixed; inset: 0;
+      background: var(--abyssal);
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 20px;
+      z-index: 999;
+      transition: opacity 0.5s;
+    }
+
+    #loading-overlay.hidden {
+      opacity: 0; pointer-events: none;
+    }
+
+    .loading-logo {
+      font-family: var(--font-display);
+      font-size: 28px; font-weight: 700;
+      color: var(--lumen);
+      letter-spacing: 0.08em;
+    }
+
+    .loading-logo span { color: var(--text-muted); }
+
+    .loading-msg {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-secondary);
+      letter-spacing: 0.06em;
+    }
+
+    /* Sonar-style animated rings */
+    .loading-sonar {
+      position: relative;
+      width: 80px; height: 80px;
+    }
+
+    .sonar-ring {
+      position: absolute; inset: 0;
+      border: 1.5px solid var(--lumen);
+      border-radius: 50%;
+      opacity: 0;
+      animation: sonarPulse 2s ease-out infinite;
+    }
+
+    .sonar-ring:nth-child(2) { animation-delay: 0.66s; }
+    .sonar-ring:nth-child(3) { animation-delay: 1.33s; }
+
+    @keyframes sonarPulse {
+      0%   { transform: scale(0.2); opacity: 0.7; }
+      100% { transform: scale(1.4); opacity: 0; }
+    }
+
+    /* ================================================================
+       WEBGL ERROR
+    ================================================================ */
+    #webgl-error {
+      position: fixed; inset: 0;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 12px; background: var(--abyssal);
+      z-index: 1000;
+    }
+
+    #webgl-error.hidden { display: none; }
+
+    #webgl-error h2 {
+      font-family: var(--font-display);
+      color: var(--warning); font-size: 20px;
+    }
+
+    #webgl-error p {
+      color: var(--text-secondary); font-size: 13px; max-width: 400px; text-align: center;
+    }
+
+    /* ================================================================
+       SCROLLBAR GLOBAL
+    ================================================================ */
+    * { scrollbar-width: thin; scrollbar-color: rgba(34,211,238,0.2) transparent; }
+
+    /* ================================================================
+       RESPONSIVE — tablet ≤ 768px
+    ================================================================ */
+    @media (max-width: 768px) {
+      :root {
+        --panel-w: calc(100vw - 28px);
+      }
+
+      #controls-panel, #layers-panel {
+        width: var(--panel-w) !important;
+      }
+
+      #layers-panel { right: 14px; top: auto; bottom: calc(var(--bottombar-h) + 10px); }
+
+      #profile-panel {
+        right: 14px;
+        width: calc(100vw - 28px);
+      }
+
+      #depth-gauge-wrap { width: 100px; height: 100px; }
+
+      .brand-sub { display: none; }
+
+      #tab-bar { gap: 2px; }
+      .tab-btn { padding: 5px 10px; font-size: 11px; }
+    }
+
+    /* ================================================================
+       UTILITY
+    ================================================================ */
+    .hidden { display: none !important; }
+  </style>
+</head>
+
+<body>
+
+<!-- Loading overlay -->
+<div id="loading-overlay">
+  <div class="loading-sonar">
+    <div class="sonar-ring"></div>
+    <div class="sonar-ring"></div>
+    <div class="sonar-ring"></div>
+  </div>
+  <div class="loading-logo">INCOIS <span>OCEAN3D</span></div>
+  <div class="loading-msg">Loading ocean data…</div>
+</div>
+
+<!-- WebGL2 unavailable message -->
+<div id="webgl-error" class="hidden">
+  <h2>⚠ WebGL2 Required</h2>
+  <p>This visualization requires WebGL2, which isn't available in your browser. Try Chrome, Firefox, or Edge (updated).</p>
+</div>
+
+<!-- Three.js canvas — full screen, behind all panels -->
+<canvas id="ocean-canvas"></canvas>
+
+<!-- Ambient water column + film grain. Both inert to pointer events. -->
+<div id="ambient" aria-hidden="true"></div>
+<div id="grain" aria-hidden="true"></div>
+
+<!-- ── TOP BAR ─────────────────────────────────────────────────── -->
+<header id="top-bar">
+  <div class="brand">
+    <img class="brand-logo" src="./assets/incois-logo.png"
+         alt="Indian National Centre for Ocean Information Services"
+         width="34" height="34" decoding="async">
+    <div class="brand-text">
+      <span class="brand-name">INCOIS OCEAN3D</span>
+      <span class="brand-sub">INDIAN OCEAN FORECAST SYSTEM</span>
+    </div>
+  </div>
+
+  <!-- Lives in the top bar, not floating over the canvas: the floating panels
+       occupy the same corner and would cover it. -->
+  <button id="back-to-globe" class="hidden" type="button" title="Return to the overview globe">
+    <i class="ph ph-globe-hemisphere-east" aria-hidden="true"></i>
+    <span>Overview</span>
+  </button>
+
+  <div class="divider-v"></div>
+
+  <nav id="tab-bar" aria-label="Variable selector">
+    <button class="tab-btn active" data-variable="temperature" aria-current="true">Temperature</button>
+    <button class="tab-btn" data-variable="salinity">Salinity</button>
+    <button class="tab-btn" data-variable="currents">Currents</button>
+    <button class="tab-btn" data-variable="chlorophyll">Chlorophyll</button>
+    <button class="tab-btn" data-variable="argo">Argo &amp; Gliders</button>
+  </nav>
+
+  <div class="top-right">
+    <button id="export-btn" type="button" title="Save this view as a PNG with its provenance">
+      <i class="ph ph-download-simple" aria-hidden="true"></i>
+      <span>Export</span>
+    </button>
+    <!-- States plainly which half of the data is real. Filled in by ui.js. -->
+    <span class="system-badge" id="provenance-badge" title="Data provenance">LOADING</span>
+  </div>
+</header>
+
+<!-- ── CONTROLS PANEL (Left) ──────────────────────────────────── -->
+<aside id="controls-panel" class="panel" aria-label="Scene controls">
+  <div class="panel-header" id="controls-toggle" tabindex="0" role="button" aria-expanded="true" aria-controls="controls-panel-body">
+    <span class="panel-title">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
+      </svg>
+      Controls
+    </span>
+    <svg class="panel-toggle-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+      <polyline points="18 15 12 9 6 15"/>
+    </svg>
+  </div>
+
+  <div class="panel-body" id="controls-panel-body">
+
+    <!-- Date -->
+    <div class="ctrl-group">
+      <label class="ctrl-label" for="ctrl-date">Date</label>
+      <!-- min/max/value are set from the Argo coverage at runtime by
+           _constrainDateToObservations(), so re-fetching moves them. -->
+      <input type="date" id="ctrl-date" value="2024-06-29" autocomplete="off">
+      <p class="ctrl-note" id="date-note"></p>
+    </div>
+
+    <!-- Timestep -->
+    <div class="ctrl-group">
+      <label class="ctrl-label" for="ctrl-timestep">Time step</label>
+      <select id="ctrl-timestep" autocomplete="off"></select>
+    </div>
+
+    <div class="section-divider"></div>
+    <span class="section-heading">3D Scene</span>
+
+    <!-- Depth slider -->
+    <div class="ctrl-group">
+      <label class="ctrl-label" for="ctrl-depth">
+        Depth slice
+        <span class="ctrl-readout" id="ctrl-depth-readout">200 m</span>
+      </label>
+      <input type="range" id="ctrl-depth" min="0" max="2000" step="10" value="200" aria-valuetext="200 m" autocomplete="off">
+    </div>
+
+    <!-- Vertical exaggeration -->
+    <div class="ctrl-group">
+      <label class="ctrl-label" for="ctrl-vert-exag">
+        Vertical exaggeration
+        <span class="ctrl-readout" id="ctrl-vert-exag-readout">3×</span>
+      </label>
+      <input type="range" id="ctrl-vert-exag" min="1" max="20" step="0.5" value="3" autocomplete="off">
+    </div>
+
+    <!-- Layer opacity -->
+    <div class="ctrl-group">
+      <label class="ctrl-label" for="ctrl-opacity">
+        Layer opacity
+        <span class="ctrl-readout" id="ctrl-opacity-readout">82%</span>
+      </label>
+      <input type="range" id="ctrl-opacity" min="0.05" max="1" step="0.01" value="0.82" autocomplete="off">
+    </div>
+
+    <div class="section-divider"></div>
+    <span class="section-heading">Colorbar</span>
+
+    <!-- Isosurface -->
+    <div class="ctrl-group">
+      <label class="ctrl-label" for="ctrl-iso">
+        Isosurface
+        <span class="ctrl-readout" id="ctrl-iso-readout">26.0</span>
+      </label>
+      <input type="range" id="ctrl-iso" min="2" max="32" step="0.5" value="26" autocomplete="off">
+      <div class="row-2">
+        <button class="scale-btn" id="iso-preset-d26" type="button" title="Depth of the 26 °C isotherm">D26</button>
+        <button class="scale-btn" id="iso-toggle" type="button">Show</button>
+      </div>
+      <p class="ctrl-note" id="iso-note"></p>
+    </div>
+
+    <!-- Palette -->
+    <div class="ctrl-group">
+      <label class="ctrl-label" for="ctrl-palette">Color palette</label>
+      <select id="ctrl-palette" autocomplete="off">
+        <optgroup label="cmocean — oceanographic standard">
+          <option value="thermal">Thermal — temperature</option>
+          <option value="haline">Haline — salinity</option>
+          <option value="algae">Algae — chlorophyll</option>
+          <option value="speed">Speed — current magnitude</option>
+          <option value="balance">Balance — anomalies (diverging)</option>
+        </optgroup>
+        <optgroup label="General purpose">
+          <option value="viridis">Viridis</option>
+          <option value="cividis">Cividis — colour-vision safe</option>
+        </optgroup>
+        <optgroup label="Not recommended">
+          <option value="jet">Jet — for comparison only</option>
+        </optgroup>
+      </select>
+      <p class="ctrl-note" id="palette-note"></p>
+    </div>
+
+    <!-- Min / Max -->
+    <div class="row-2">
+      <div class="ctrl-group">
+        <label class="ctrl-label" for="ctrl-min">Min</label>
+        <input type="number" id="ctrl-min" step="0.1" autocomplete="off">
+      </div>
+      <div class="ctrl-group">
+        <label class="ctrl-label" for="ctrl-max">Max</label>
+        <input type="number" id="ctrl-max" step="0.1" autocomplete="off">
+      </div>
+    </div>
+
+    <!-- Scale -->
+    <div class="ctrl-group">
+      <span class="ctrl-label">Value scale</span>
+      <div class="scale-toggle">
+        <button class="scale-btn active" id="scale-linear">Linear</button>
+        <button class="scale-btn" id="scale-log">Log</button>
+      </div>
+    </div>
+
+  </div><!-- /panel-body -->
+</aside>
+
+<!-- ── LAYERS PANEL (Right) ───────────────────────────────────── -->
+<aside id="layers-panel" class="panel" aria-label="Layer visibility">
+  <div class="panel-header" id="layers-toggle" tabindex="0" role="button" aria-expanded="true" aria-controls="layers-panel-body">
+    <span class="panel-title">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <polygon points="12 2 2 7 12 12 22 7"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>
+      </svg>
+      Layers
+    </span>
+    <svg class="panel-toggle-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+      <polyline points="18 15 12 9 6 15"/>
+    </svg>
+  </div>
+
+  <div class="panel-body" id="layers-panel-body">
+    <div id="layers-list"></div>
+
+    <div class="section-divider"></div>
+    <span class="section-heading">Data sources</span>
+    <div id="plugin-registry-list"></div>
+  </div>
+</aside>
+
+<!-- ── PROFILE PANEL (appears on marker click) ────────────────── -->
+<div id="profile-panel" class="panel hidden" role="dialog" aria-label="Platform profile" aria-modal="false">
+  <div class="panel-header">
+    <span class="panel-title" id="profile-title">Platform</span>
+    <button id="profile-close" aria-label="Close profile panel">✕</button>
+  </div>
+
+  <div id="profile-meta"></div>
+  <div id="profile-var-toggle"></div>
+
+  <canvas id="profile-chart-canvas" width="276" height="260"></canvas>
+</div>
+
+<!-- ── COLORBAR LEGEND ────────────────────────────────────────── -->
+<div id="colorbar-legend" aria-label="Color scale legend">
+  <div id="colorbar-label">Temperature (°C)</div>
+  <canvas id="colorbar-canvas" height="34"></canvas>
+  <p id="vector-key" class="hidden"></p>
+  <p id="tchp-key" class="hidden"></p>
+</div>
+
+<!-- ── SCALE / DOMAIN BADGE ──────────────────────────────────── -->
+<div id="scale-badge" aria-label="Scene scale and domain"></div>
+
+<!-- ── AREA SELECTION (globe only) ───────────────────────────── -->
+<div id="area-tools">
+  <button id="area-select-btn" type="button" title="Drag a box on the globe to choose a region">
+    <i class="ph ph-selection-plus" aria-hidden="true"></i>
+    <span>Select area</span>
+  </button>
+  <button id="area-reset-btn" class="hidden" type="button" title="Show the whole basin again">
+    <i class="ph ph-arrows-out" aria-hidden="true"></i>
+    <span>Whole basin</span>
+  </button>
+  <span id="area-readout" class="hidden"></span>
+</div>
+
+<p id="globe-hint">
+  <i class="ph ph-cursor-click" aria-hidden="true"></i>
+  Select the highlighted model domain, or an instrument, to open the water column
+</p>
+
+<!-- ── DEPTH GAUGE — Signature element ───────────────────────── -->
+<div id="depth-gauge-wrap" aria-label="Depth gauge dial" role="img">
+  <canvas id="depth-gauge-canvas"></canvas>
+</div>
+
+<!-- ── BOTTOM TIMELINE BAR ────────────────────────────────────── -->
+<footer id="bottom-bar">
+  <div id="timeline-controls">
+    <button class="tl-btn" id="timeline-play" aria-label="Play">
+      <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+    </button>
+    <button class="tl-btn" id="timeline-speed" aria-label="Playback speed">1×</button>
+  </div>
+
+  <div id="timeline-track" role="listbox" aria-label="Time steps"></div>
+</footer>
+
+<!-- ── GLOBAL ERROR CATCHER (shows errors visually, no DevTools needed) ── -->
+<script>
+  window.addEventListener('error', function(e) {
+    var overlay = document.getElementById('loading-overlay');
+    if (!overlay || overlay.classList.contains('hidden')) return;
+    var msg = overlay.querySelector('.loading-msg');
+    if (msg) {
+      msg.textContent = '⚠ JS Error: ' + (e.message || e.type) + ' — ' + (e.filename || '') + ':' + (e.lineno || '');
+      msg.style.color = 'var(--warning)';
+      msg.style.maxWidth = '480px';
+      msg.style.textAlign = 'center';
+    }
+    overlay.querySelectorAll('.sonar-ring').forEach(function(r){ r.style.animation='none'; });
+  });
+  window.addEventListener('unhandledrejection', function(e) {
+    var overlay = document.getElementById('loading-overlay');
+    if (!overlay || overlay.classList.contains('hidden')) return;
+    var msg = overlay.querySelector('.loading-msg');
+    if (msg) {
+      var reason = e.reason && (e.reason.message || String(e.reason)) || 'Unknown promise rejection';
+      msg.textContent = '⚠ Load Error: ' + reason;
+      msg.style.color = 'var(--warning)';
+      msg.style.maxWidth = '480px';
+      msg.style.textAlign = 'center';
+    }
+    overlay.querySelectorAll('.sonar-ring').forEach(function(r){ r.style.animation='none'; });
+  });
+</script>
+
+<!-- ── MODULE ENTRY POINT ─────────────────────────────────────── -->
+<script type="module" src="./js/main.js"></script>
+
+</body>
+</html>
