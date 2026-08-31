@@ -31,25 +31,34 @@ Ocean (55°E–95°E, 10°S–25°N, 0–2000 m)** carrying:
 - **Argo floats** — real WMO-numbered floats with QC'd temperature and salinity
   profiles, and surfacing trajectories
 - **BGC floats** — real adjusted chlorophyll profiles
-- **Gliders, CTD casts, moorings** — synthetic, pending a data source
+- **Gliders** — real dives from the OceanGliders GDAC, one profile per descent
+- **CTD casts** — real GO-SHIP ship casts, grouped by cruise
+- **Moorings** — real Indian OMNI buoy profiles, three-hourly and current
 
 Click any instrument for a depth profile beside the model field it sits in.
 
-> **Argo observations are real.** 16 core floats (517 QC'd T/S profiles) and
-> 16 BGC floats (343 chlorophyll profiles) from the Argo Global Data Assembly
-> Centre, spanning the Arabian Sea, the Bay of Bengal and the equatorial Indian
-> Ocean. Model fields, gliders, CTD casts and moorings are synthetic, and the UI
-> says so on every surface that shows them.
+> **The observations and the temperature/salinity field are both real.**
+> 16 core Argo floats (456 QC'd T/S profiles) and 16 BGC floats (323
+> chlorophyll profiles) from the Argo Global Data Assembly Centre — drawn from
+> the 222 floats that reported in this basin over the window, 101 of them
+> INCOIS-managed — over a
+> gridded temperature and salinity field from INCOIS's own ERDDAP — the
+> `incois_argo_10d_VAM` variational analysis, 1°, 24 levels from 5 m to
+> 2000 m, ten-daily. Gliders, CTD casts and moorings are real too, from three
+> further servers. Only the **currents and chlorophyll fields** are still
+> generated, and the UI says so per variable rather than per app.
 
 The service layer (`dataService.js`) is a strict seam: swapping the remaining
 synthetic sources for a real backend means editing **only that one file**.
+The model field already proves it — it replaced a generator without the
+renderer learning anything new about where data comes from.
 
 ---
 
 ## 🗂️ Project Structure
 
 ```
-Ocean_Data_Visualization/
+SIH2026/
 │
 ├── index.html              ← Single HTML shell — layout, all CSS, importmap
 ├── serve.py                ← Dev server (stdlib only, sends no-store)
@@ -57,8 +66,11 @@ Ocean_Data_Visualization/
 ├── assets/
 │   └── incois-logo.png     ← INCOIS seal, downscaled 14584px → 96px (5.5 MB → 18 KB)
 │
-├── tools/
-│   └── fetch_argo.py       ← Argo + BGC fetch with QC. Re-run to refresh data
+├── tools/                  ← One flat, stdlib-only script per source. Re-run
+│   │                         any of them to refresh that snapshot.
+│   ├── fetch_argo.py       ← Argo + BGC profiles, QC'd, with a basin census
+│   ├── fetch_model.py      ← INCOIS gridded T/S  (--check, --validate-d26)
+│   └── fetch_instruments.py ← Gliders, CTD casts, moorings  (--check)
 │
 └── js/
     ├── main.js             ← App boot entry point (WebGL2 check → scene → UI)
@@ -72,13 +84,21 @@ Ocean_Data_Visualization/
     ├── charts.js           ← Canvas 2D: depth-profile chart, colorbar, depth gauge
     ├── ui.js               ← UI wiring: panels, timeline, tab bar, profile panel
     └── data/
-        └── argo.json       ← Real Argo + BGC observations, QC'd (~1.9 MB)
+        ├── argo.json       ← Argo + BGC observations, QC'd (1.8 MB)
+        ├── model.json      ← INCOIS gridded T/S, 8 frames × 24 levels (3.2 MB)
+        └── instruments.json ← Glider dives, CTD casts, mooring profiles (0.9 MB)
 ```
 
 > **No `node_modules`, no `package.json`, no build step.** Three.js, fonts and
 > icons load from CDN via ES module importmap. Everything else — coastlines,
-> observations, the logo — is bundled, so the app renders with no network call.
-> A venue with bad wifi cannot break the demo.
+> observations, the gridded field, the logo — is bundled, so the app renders
+> with no network call. A venue with bad wifi cannot break the demo.
+>
+> The snapshots are committed for a second reason too: **none of the source
+> servers send an `Access-Control-Allow-Origin` header**, so a browser cannot
+> fetch them directly however the code is arranged. The `tools/` scripts are
+> not a convenience, they are the only shape that works without standing up a
+> proxy.
 
 ---
 
@@ -259,6 +279,74 @@ field, which the accent gradient previously fought.
 
 ---
 
+## 📊 Where every layer's data comes from
+
+Six data classes, five servers, four fetch scripts. Nothing in the app is
+generated except the currents and chlorophyll fields, which have no
+credential-free source for this basin.
+
+| Class | Server | Dataset | Fetched by |
+|---|---|---|---|
+| **Argo floats** | Ifremer ERDDAP · `erddap.ifremer.fr` | `ArgoFloats` (Argo GDAC) | `tools/fetch_argo.py` |
+| **BGC floats** | Ifremer ERDDAP | `ArgoFloats-synthetic-BGC` | `tools/fetch_argo.py` |
+| **Gliders** | Ifremer ERDDAP | `OceanGlidersGDACTrajectories` | `tools/fetch_instruments.py` |
+| **CTD casts** | NOAA OSMC ERDDAP · `osmc.noaa.gov` | `cchdo_ctd` (CCHDO / GO-SHIP) | `tools/fetch_instruments.py` |
+| **Moorings** | NOAA OSMC ERDDAP | `OSMCV4_DUO_PROFILES`, filtered to moored buoys | `tools/fetch_instruments.py` |
+| **Model field** (T, S) | INCOIS ERDDAP · `erddap.incois.gov.in` | `incois_argo_10d_VAM` | `tools/fetch_model.py` |
+| Currents, chlorophyll fields | — | — | still generated |
+
+Validation for the derived layers comes from a seventh dataset,
+`incois_valueadded_products_datasets` on the same INCOIS server — see
+[D26](#d26).
+
+### Coverage of the bundled snapshot
+
+Spans below are the **actual first and last observation in each committed
+file**, not the window that was requested. Snapshot taken 2026-08-31.
+
+| Class | Earliest | Latest | Platforms | Profiles |
+|---|---|---|---|---|
+| Argo floats | 2026-02-26 14:24 | **2026-08-30 19:17** | 16 | 456 |
+| BGC floats | 2026-02-26 08:01 | **2026-08-30 22:03** | 16 | 323 |
+| Moorings | 2026-07-17 00:00 | **2026-08-31 09:00** | 5 | 166 |
+| CTD casts | 2007-04-06 12:32 | **2025-04-23 13:43** | 5 | 200 |
+| Gliders | 2016-06-30 04:14 | **2022-10-14 04:10** | 7 | 210 |
+| Model field | 2026-02-28 | **2026-07-30** | 8 frames | — |
+
+All times UTC. These figures move every time the fetchers run; to print the
+current ones rather than trusting this table:
+
+```bash
+python tools/fetch_instruments.py --check
+python tools/fetch_model.py --check
+```
+
+### Why three of them are current and two are not
+
+This is a property of the ocean observing network, not a gap in the pipeline,
+and the app is built to say so rather than to hide it.
+
+- **Moorings are the freshest thing in the app** — 09:00 on the day of the
+  snapshot, reporting every three hours.
+- **Argo and BGC** run to the previous evening.
+- **CTD casts are research cruises.** The newest GO-SHIP occupation of this
+  basin was April 2025; there has not been one since.
+- **Gliders stopped in 2022.** Only seven deployments have *ever* entered this
+  domain — five in the Bay of Bengal around 8°N in mid-2016, two in the Gulf of
+  Oman in 2021–22. Nothing since 2022-10-14.
+- **The model field lags the observations by about a month.** INCOIS's analysis
+  runs that far behind real time, which is why the app opens on the newest
+  analysis frame rather than on today.
+
+Every profile carries its own timestamp and the UI states its distance from the
+selected model frame, so a 2016 glider dive is chipped **10.0 yr before model
+frame** in the warning colour instead of sitting silently beside a 2026 field.
+Forcing one rolling window across all of these would have returned an empty
+file for the gliders and the CTD casts and quietly deleted two instrument
+classes from the app; each source takes the window it actually has.
+
+---
+
 ## 🛟 Real Argo data
 
 `js/data/argo.json` holds genuine Argo GDAC observations, fetched and quality
@@ -266,10 +354,11 @@ controlled by `tools/fetch_argo.py` and committed so the app needs no network at
 runtime. Refresh with:
 
 ```bash
-python tools/fetch_argo.py --start 2024-01-01 --end 2024-06-30 --max-floats 16
+python tools/fetch_argo.py                    # the last six months, to today
+python tools/fetch_argo.py --start 2026-02-25 --end 2026-08-30 --max-floats 16
 ```
 
-The bundled build is 16 core floats / 517 profiles and 16 BGC floats / 343
+The bundled build is 16 core floats / 456 profiles and 16 BGC floats / 323
 chlorophyll profiles (~1.9 MB), from 1.35 M raw levels after QC. Data modes span
 all three: 393 delayed, 104 real-time, 20 adjusted.
 
@@ -298,7 +387,40 @@ in the ocean.
 
 ### BGC chlorophyll
 
-16 BGC floats, 343 profiles, from `ArgoFloats-synthetic-BGC` on the same server.
+16 BGC floats, 323 profiles, from `ArgoFloats-synthetic-BGC` on the same server.
+
+### Which floats, and whose
+
+`data_center` is requested alongside the measurements, so every profile carries
+the Data Assembly Centre that curated it — `IN` incois, `AO` aoml, `IF`
+coriolis, `HZ` csio, `BO` bodc, `CS` csiro, `ME` meds.
+
+Two different numbers are reported, and conflating them would misrepresent
+both. The **census** counts every float that reported anywhere in the domain
+during the window; the **bundle** is the readable subset actually drawn:
+
+```
+Basin: 222 floats reported in this window, 101 INCOIS-managed (45%)
+  shown: 16, sampled per data centre (IN 8, AO 5, IF 2, HZ 1)
+```
+
+INCOIS operates just under half the floats in this basin — the largest single
+contributor, ahead of AOML's 66.
+
+The bundle used to be chosen purely by cycle count, on the reasoning that
+floats with more surfacings draw real trajectories rather than isolated dots.
+Against a six-month window that rule returned sixteen floats and **not one was
+Indian**, because INCOIS floats cycle every ten days while some others report
+every two. A displayed sample that contradicts the census printed beside it is
+worse than a smaller sample, so seats are now apportioned across centres in
+proportion to the basin, with cycle count deciding which floats fill a centre's
+seats. The tracks are still real trajectories; the mix now matches the ocean.
+
+Seats are allocated by highest averages (D'Hondt), one at a time, rather than
+by largest remainder followed by round-robin. The difference only shows when a
+centre runs out of floats: the round-robin gave its leftover seats to whoever
+had capacity, which on a thin pool handed MEDS — two floats in the whole basin —
+eight of the sixteen seats.
 
 Chlorophyll comes from **`chla_adjusted`, never `chla`**. In this domain 100% of
 raw fluorescence levels carry QC flag 3 ("probably bad") — the sensor needs a
@@ -314,24 +436,67 @@ The bundled profiles show a textbook **subsurface chlorophyll maximum**: 0.03 mg
 m⁻³ at 35 dbar rising to 0.61 at 65 dbar, then falling away below the photic
 zone.
 
-### Instrument classes that are still synthetic
+### The other three instrument classes
 
-The domain was widened from the Arabian Sea (68–78°E / 8–20°N) to the basin
-(55–95°E / 10°S–25°N) specifically to reach real data for every instrument
-class. It roughly **quadrupled the real Argo** (10 → 16 floats, 165 → 517
-profiles) and **grew BGC chlorophyll 26×** (13 → 343 profiles). Gliders and
-moorings did not follow, for reasons that are worth stating precisely:
+Gliders, CTD casts and moorings are fetched by `tools/fetch_instruments.py`
+into `js/data/instruments.json`. Three sources, three servers, three schemas,
+reduced to the same platform/profile contract the floats already use — the
+scene and the profile panel needed no knowledge of any of them.
 
-| Class | Status after widening |
-|---|---|
-| Gliders | **7 real deployments now in the domain**, but all are July 2016 (Bay of Bengal, ~8°N 86–89°E) or Nov 2021–Oct 2022 (Gulf of Oman, ~24°N 58°E). None overlap the 2024 Argo window, so co-visualising them would mean putting instruments 2–8 years apart in one frame. The GDAC also ships **no QC flags** for these deployments (`TEMP_QC`/`PSAL_QC` are all null), so range checks would be the only filter. One deployment is 163,150 rows over 11 days and needs heavy decimation. |
-| CTD casts | `ArgoFloats-reference-CTD` returns **401 Unauthorized** — the dataset requires credentials. |
-| Moorings | RAMA now has ~10 sites inside the domain. The PMEL ERDDAP **302-redirects to `coastwatch.pfeg.noaa.gov`, which is unreachable from this network**, so the fetch cannot complete here. The query itself is correct and is the natural next connector from a network that can reach NOAA. |
+| Class | Source | In domain | Window |
+|---|---|---|---|
+| Moorings | OSMC ERDDAP `OSMCV4_DUO_PROFILES`, moored buoys only | 5 buoys, 166 profiles | **current**, rolling 45 days |
+| Gliders | Ifremer ERDDAP `OceanGlidersGDACTrajectories` | 7 deployments, 210 dives | 2016-06-30 → 2022-10-12 |
+| CTD | OSMC ERDDAP `cchdo_ctd` (CCHDO / GO-SHIP) | 5 cruises, 200 casts | 2007-04-06 → 2025-04-23 |
 
-**To bring gliders in**, re-fetch Argo over a window that overlaps a deployment
-(`--start 2022-07-01 --end 2022-10-31` overlaps `sea057_20220707`) so both
-instrument classes describe the same months. That trades away the current dense
-2024 BGC coverage, which is why it is not the default.
+**They do not share a time window, and that is a fact about the observing
+network rather than a gap in the pipeline.** The moorings report every three
+hours and are current to within hours. The last glider left this basin on
+2022-10-12. The CTD casts are research cruises. Forcing one rolling window
+across all three would have returned an empty file for two of them and silently
+deleted them from the app, so each takes the window it actually has, the file
+records which, and every profile carries its own date. A 2016 glider dive
+opened beside a 2026 field is labelled *10.0 yr before model frame* in the same
+orange the app uses for anything else that cannot be compared at face value.
+
+Three findings worth recording, because each one cost a wrong turn:
+
+- **The obvious mooring dataset is the wrong one.** OSMC's
+  `OSMCV4_DUO_TIME_SERIES` carries these same Indian buoys with
+  `observation_depth` of 0 and `ztmp` populated in 2 rows out of 7,602 — it is
+  a surface feed. `OSMCV4_DUO_PROFILES` carries the same buoys with real
+  nine-level temperature *and* salinity from 10 m to 500 m. Using the first
+  would have made a profiling buoy look like a thermometer.
+- **CTD needed a different host.** Ifremer's `ArgoFloats-reference-CTD` returns
+  **401 Unauthorized**. CCHDO / GO-SHIP via OSMC is open, and is better data:
+  ship CTD with WOCE quality flags.
+- **RAMA via PMEL is unreachable from here.** OSMC's `pmelTao*` datasets
+  302-redirect to `coastwatch.pfeg.noaa.gov`, which times out from this
+  network. `OSMCV4_DUO_PROFILES` reaches the same tropical moorings without the
+  redirect.
+
+**Quality control differs by source, and the panel says so.** Only the CTD data
+ships per-level flags (WOCE: 2 acceptable, 6 interpolated); flag 2 alone is
+kept, on the same principle that makes the Argo fetcher keep flags 1 and 2. The
+glider aggregate returns `TEMP_QC` and `PSAL_QC` entirely null for these
+deployments and fills `TEMP_UNCERTAINTY` with 99999, and the mooring feed ships
+no flags either. Those two get range checks, monotonic-pressure checks and
+duplicate-level removal, and their profiles are chipped **Range-checked only**
+rather than being allowed to imply a quality-controlled profile nobody
+supplied.
+
+A glider deployment is a continuous trajectory, not a set of profiles — the
+GDAC returns 47,416 samples for three days of one deployment. Each descent
+between two surfacings becomes one profile, which is the same object an Argo
+cycle is, so it flows through the existing contract untouched. A CTD cruise is
+treated as the platform and each cast as one of its profiles, so the markers
+trace the section line the ship actually steamed instead of scattering 1,144
+unrelated dots.
+
+Identifiers are named for what they are. A WMO number belongs to a float or a
+GTS buoy; a glider carries a deployment name and a CTD cast carries a cruise
+ExpoCode, and the panel labels each accordingly rather than calling all three a
+WMO number.
 
 ### Time: the model frame and the observations must agree
 
@@ -430,8 +595,8 @@ into the file:
 INCOIS OCEAN3D
 Temperature (°C)
 55°E–95°E · 10°S–25°N · depth slice 200 m · vert. exag. 3×
-2024-06-29 06:00 UTC · palette thermal · scale linear 2-32 · isosurface 26 °C @ 43–124 m
-Observations: real (Argo GDAC, 32 floats, QC flags 1/2) · Model field: SYNTHETIC
+frame 2026-07-30 (same day requested 2026-07-30) · palette thermal · scale linear 2-32 · isosurface 26 °C @ 13–111 m
+Observations: real (Argo GDAC, 27 floats of 222 in basin, 101 INCOIS-managed, QC flags 1/2) · Field: real (incois_argo_10d_VAM, 24 levels to 2000 m)
 ```
 
 A bare screenshot of an ocean field is unusable as evidence. It travels far
@@ -441,7 +606,10 @@ needed to interpret — or challenge — the image is burned into the image.
 
 The last line is the one that matters most: it states plainly which half of the
 figure is real. A slide deck circulating without it is exactly how a synthetic
-field ends up quoted as an observation.
+field ends up quoted as an observation. It is written per variable, not per
+app — temperature and salinity come from the INCOIS grid, currents and
+chlorophyll are still generated, and one sentence covering both would be false
+about one of them. It turns green only when nothing in the frame is generated.
 
 Files are named `incois-ocean3d_<variable>_<date>_<timestep>.png`, so a folder
 of exports sorts meaningfully.
@@ -567,7 +735,8 @@ const snap = State.snapshot();
 ```js
 {
   activeVariable:      'temperature',          // 'temperature'|'salinity'|'currents'|'chlorophyll'
-  selectedDate:        '2024-06-29',   // clamped to real Argo coverage
+  selectedDate:        '2026-07-30',   // clamped to Argo coverage, then
+                                       // snapped to the newest field frame
   selectedTimestep:    '06:00',
   availableTimesteps:  ['00:00','06:00','12:00','18:00'],
   depthSlice:          200,                    // metres (0–2000)
@@ -630,7 +799,7 @@ export const SCENE_H = 10;  // Three.js scene Y span (depth, before exaggeration
 import { getModelField, getInstrumentPlatforms, getProfile, getAllPlatforms, PLUGIN_REGISTRY, VARIABLE_META, DOMAIN } from './dataService.js';
 
 // Fetch a 3D model field
-const field = await getModelField('temperature', '2024-06-29', '06:00');
+const field = await getModelField('temperature', '2026-07-30', '06:00');
 
 // Fetch all platforms of one type
 const argoList = await getInstrumentPlatforms('argo');
@@ -880,7 +1049,7 @@ These are the exact response shapes the mock returns today and that a real backe
 {
   "variable": "temperature",
   "unit": "°C",
-  "date": "2024-06-29",
+  "date": "2026-07-30",
   "timestep": "06:00",
   "bounds": {
     "lonMin": 68, "lonMax": 78,
@@ -913,7 +1082,7 @@ real sources ignore it, because they exist when they were measured.
     "real": true,                  // drives the "Argo GDAC" vs "Synthetic" badge
     "lat": 13.117,                 // latest surfacing, NOT where it profiled
     "lon": 68.550,
-    "lastUpdate": "2024-06-22T14:06:00Z",
+    "lastUpdate": "2026-07-28T14:06:00Z",
     "dataMode": "D",               // R real-time | A adjusted | D delayed
     "cycleCount": 18,
     "track": [{ "lat": 13.1, "lon": 68.5 }]
@@ -941,7 +1110,7 @@ observations rather than pinning one profile.
   "dataMode": "D",
   "adjusted": true,                // were _ADJUSTED fields used?
   "lat": 13.117, "lon": 68.550,
-  "timestamps": ["2024-06-22T14:06:00Z"],
+  "timestamps": ["2026-07-28T14:06:00Z"],
   "pressureDbar": [0, 4.9, 10.1],  // as measured. Presence of this field makes
                                    // the chart axis read "Pressure (dbar)"
   "depths":       [0, 4.9, 10.1],  // display convenience, 1 dbar ~ 1 m
@@ -1115,10 +1284,10 @@ That's it. The new source will automatically appear in the layers panel, render 
 | ID | Label | Marker | Track | Profile variables | Data |
 |---|---|---|---|---|---|
 | `argo` | Argo Floats | `--data-argo` | link | temperature, salinity | **real** |
-| `glider` | Gliders | `--data-glider` | spline | temperature, salinity | synthetic |
-| `ctd` | CTD Casts | `--data-ctd` | none | temperature, salinity | synthetic |
+| `glider` | Gliders | `--data-glider` | spline | temperature, salinity | **real** |
+| `ctd` | CTD Casts | `--data-ctd` | link | temperature, salinity | **real** |
 | `bgc` | BGC Floats | `--data-bgc` | link | chlorophyll | **real** |
-| `mooring` | Moorings (stub) | `--data-mooring` | none | temperature, salinity | synthetic |
+| `mooring` | Moorings | `--data-mooring` | none | temperature, salinity | **real** |
 
 ---
 
@@ -1261,10 +1430,10 @@ Then add it to the `<select id="ctrl-palette">` in `index.html`.
 | Current particle animation | ✅ | 3000 additive-blended sprites; auto-enabled on Currents |
 | Animated water surface | ✅ | GPU vertex shader, toggleable, marked `decor` in the layer list |
 | Argo float markers | ✅ | **Real** WMO floats, raycasted, profile on click |
-| Glider spline tracks | ✅ | CatmullRom spline (synthetic source) |
-| CTD cast markers | ✅ | Synthetic source |
+| Glider spline tracks | ✅ | CatmullRom spline over real dive positions |
+| CTD cast markers | ✅ | Real GO-SHIP casts, one platform per cruise |
 | BGC float markers | ✅ | **Real** adjusted chlorophyll profiles |
-| Mooring stub (plugin proof) | ✅ | Synthetic; proves the registry pattern |
+| Moorings | ✅ | Real Indian OMNI buoys, nine-level T/S, three-hourly |
 | Click-to-profile panel | ✅ | Depth-vs-variable Canvas chart |
 | Multi-variable profile toggle | ✅ | Per-platform; QC-depleted variables struck through |
 | Platform metadata display | ✅ | WMO, cycle, data mode, adjusted/raw, levels, max pressure |
@@ -1356,8 +1525,12 @@ matter, and both are derivable from data this app already renders:
 **Both are now implemented** — see [Derived layers](#-derived-layers-isosurface-d26-and-tchp).
 D26 is an isosurface of the temperature volume; TCHP is a vertical integral of
 it. Neither needed new data, only derived layers over the field already in
-memory. What they still need to be *operational* is a real INCOIS forecast
-underneath them rather than a synthetic field.
+memory — and they now sit on a real INCOIS analysis rather than a generated
+one. Computed D26 reproduces INCOIS's own published D26 field to a mean
+absolute difference of 0.018 m over 1,175 co-located cells, the residual being
+the two-decimal rounding applied when the field is written to disk
+(`python tools/fetch_model.py --validate-d26`). What they still need to be
+*operational* is a forecast rather than an analysis of what already happened.
 
 The Bay of Bengal adds a wrinkle the visualisation is well suited to: heavy
 river discharge creates a fresh, buoyant surface layer that suppresses mixing
@@ -1423,7 +1596,7 @@ data that was stale, unadjusted, or quality-flagged.
 ## 🔮 Future Roadmap
 
 **Data**
-- [x] Real Argo GDAC profiles with QC (16 floats, 517 profiles)
+- [x] Real Argo GDAC profiles with QC (16 floats, 456 profiles, stratified by data centre)
 - [x] Real BGC chlorophyll from adjusted fields (16 floats, 343 profiles)
 - [ ] Real NetCDF/OPeNDAP model fields — blocks everything in the hazard section
 - [ ] Glider feed (data exists, no temporal overlap and no QC flags; see above)

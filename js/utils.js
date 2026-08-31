@@ -144,8 +144,14 @@ export const DIVERGING_PALETTES = new Set(['balance']);
 /**
  * Map a normalised value (0–1) to an RGBA colour using the chosen palette.
  * Returns [r, g, b, a] each 0–255.
+ *
+ * A non-finite `t` returns fully transparent rather than a colour. Real fields
+ * carry land and unanalysed cells as NaN, and without this the arithmetic below
+ * indexes the stop table with NaN and throws — one missing cell would take the
+ * whole layer, and with it the scene, down. Absent data must render as absent.
  */
 export function valueToColor(t, palette = 'thermal', alpha = 255) {
+  if (!Number.isFinite(t)) return [0, 0, 0, 0];
   t = clamp(t, 0, 1);
   const stops = PALETTES[palette] || PALETTES.thermal;
   const seg = (stops.length - 1) * t;
@@ -182,6 +188,10 @@ export function buildColorbarImageData(palette) {
 export function generateHeatmapTexture(values, w, h, min, max, palette = 'jet', scale = 'linear') {
   const data = new Uint8ClampedArray(w * h * 4);
   for (let i = 0; i < w * h; i++) {
+    // Land and unanalysed cells arrive as NaN and stay a hole. Substituting a
+    // number here — 0, the minimum, a neighbour — would paint a continent as
+    // water at whatever temperature that number happens to mean.
+    if (!Number.isFinite(values[i])) continue;   // leaves RGBA 0,0,0,0
     let t;
     if (scale === 'log') {
       const logMin = Math.log(Math.max(min, 1e-6));
@@ -197,6 +207,54 @@ export function generateHeatmapTexture(values, w, h, min, max, palette = 'jet', 
     data[i * 4 + 3] = a;
   }
   return data;
+}
+
+/**
+ * Resample a vertical section from the field's own depth levels onto an evenly
+ * spaced one, so it can be drawn as a texture.
+ *
+ * A texture maps its rows linearly across the plane it is on. The real levels
+ * are not linear — 5, 10, 20, 30, 50, 75, 100 ... 1800, 2000 m — so painting
+ * them row-for-row puts the 100 m level a quarter of the way down a 2000 m box
+ * and draws the thermocline at five times its true depth. That is not a styling
+ * choice, it is the picture being wrong, and it is the reason `depths` is
+ * carried through from the fetch rather than derived from the level index.
+ *
+ * @param {Float32Array} values  w × depths.length, row-major (row = level)
+ * @param {number} w             columns (longitude or latitude samples)
+ * @param {number[]} depths      the field's real levels, ascending, in metres
+ * @param {number} outH          output rows, evenly spaced over [0, depthMax]
+ * @param {number} depthMax      bottom of the box, in metres
+ * @returns {Float32Array} w × outH, NaN where the field has no value
+ */
+export function resampleDepthRows(values, w, depths, outH, depthMax) {
+  const nz = depths.length;
+  const out = new Float32Array(w * outH).fill(NaN);
+  let k = 0;
+  for (let j = 0; j < outH; j++) {
+    const d = (j / (outH - 1)) * depthMax;
+    // Deeper than the product reaches: stays NaN. Extrapolating downward would
+    // invent a water column below where the analysis actually stops.
+    if (d > depths[nz - 1]) break;
+    if (d <= depths[0]) {
+      // Above the shallowest level. Held flat rather than faded out: the top
+      // level here is 5 m and it sits inside the mixed layer, which is by
+      // definition uniform over that distance.
+      out.set(values.subarray(0, w), j * w);
+      continue;
+    }
+    while (k < nz - 2 && depths[k + 1] < d) k++;
+    const t = (d - depths[k]) / (depths[k + 1] - depths[k]);
+    for (let i = 0; i < w; i++) {
+      const a = values[k * w + i], b = values[(k + 1) * w + i];
+      // A hole on either side is a hole here: the seafloor between two levels
+      // is not somewhere to interpolate through.
+      out[j * w + i] = Number.isFinite(a) && Number.isFinite(b)
+        ? a + (b - a) * t
+        : NaN;
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

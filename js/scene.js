@@ -18,7 +18,8 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import State from './state.js';
 import { PLUGIN_REGISTRY, VARIABLE_META, getModelField, getAllPlatforms } from './dataService.js';
-import { latLonDepthToScene, depthToSceneY, seededNoise, generateHeatmapTexture, clamp, lerp, valueToColor } from './utils.js';
+import { latLonDepthToScene, depthToSceneY, seededNoise, generateHeatmapTexture,
+         resampleDepthRows, clamp, lerp, valueToColor } from './utils.js';
 import { DOMAIN, VIEW, SCENE_W, SCENE_D, SCENE_H,
          setViewBounds, resetViewBounds, MIN_SELECTION_DEG } from './constants.js';
 import { buildGlobe, latLonToGlobe, globeToLatLon, GLOBE_R,
@@ -49,6 +50,7 @@ let _raycaster = null;
 let _markerObjects = [];   // { mesh, platform } for raycasting
 let _markerGen = 0;        // guards concurrent marker refreshes
 let _isoStats = null;      // coverage/depth range of the last isosurface
+let _modelGen = 0;         // guards concurrent field refreshes, like _markerGen
 let _modelData = null;     // last fetched model field data
 
 // Live query, so a mid-session OS setting change is picked up without reload
@@ -474,10 +476,30 @@ async function _refreshModelLayers() {
   const minVal    = State.get('colorbarMin') ?? meta.defaultMin;
   const maxVal    = State.get('colorbarMax') ?? meta.defaultMax;
 
-  // Fetch field from dataService
-  _modelData = await getModelField(variable, date, timestep);
+  // Fetch field from dataService.
+  // The two paths no longer take the same time: a real variable resolves off
+  // the already-loaded document in a microtask, while the synthetic generator
+  // still waits 60 ms. Without this guard, switching temperature -> currents
+  // -> temperature paints the slower synthetic field over the newer real one.
+  const gen = ++_modelGen;
+  const field = await getModelField(variable, date, timestep);
+  if (gen !== _modelGen) return;          // a newer refresh started mid-await
+  _modelData = field;
   const { grid, values } = _modelData;
   const { nx, ny, nz } = grid;
+
+  // Publish which frame is actually on screen. The analysis is ten-daily and
+  // the date control is continuous, so the frame is the nearest one — the same
+  // reconciliation a float profile gets, and it has to be as visible.
+  State.set('modelFrame', _modelData.real
+    ? { time: _modelData.time, offsetMs: _modelData.offsetMs,
+        index: _modelData.frameIndex, count: _modelData.frameCount,
+        dataset: _modelData.dataset, variable,
+        // The extent the cells actually cover, which a dragged selection
+        // rounds outward from. The export strip states this rather than the
+        // box that was requested.
+        bounds: _modelData.bounds }
+    : null);
 
   // Helper: extract a 2D horizontal slice at depth index iz
   function extractHSlice(iz) {
@@ -513,14 +535,17 @@ async function _refreshModelLayers() {
 
   // Depth slice plane
   const depthM = State.get('depthSlice');
-  const depthIz = Math.round((depthM / DOMAIN.depthMax) * (nz - 1));
-  _buildHPlane('depthSlice', extractHSlice(clamp(depthIz, 0, nz-1)), nx, ny, depthToSceneY(depthM, EXAG), palette, minVal, maxVal, scale);
+  const depthIz = _depthIndex(depthM);
+  _buildHPlane('depthSlice', extractHSlice(clamp(depthIz, 0, nz-1)), nx, ny,
+               depthToSceneY(_depths()[depthIz], EXAG), palette, minVal, maxVal, scale);
 
   // Longitudinal (N-S) section — midpoint latitude
-  _buildVPlaneX('lonSection', extractLonSlice(Math.floor(ny / 2)), nx, nz, EXAG, palette, minVal, maxVal, scale);
+  const iyMid = Math.floor(ny / 2);
+  _buildVPlaneX('lonSection', extractLonSlice(iyMid), nx, nz, EXAG, palette, minVal, maxVal, scale, iyMid, ny);
 
   // Latitudinal (E-W) section — midpoint longitude
-  _buildVPlaneZ('latSection', extractLatSlice(Math.floor(nx / 2)), ny, nz, EXAG, palette, minVal, maxVal, scale);
+  const ixMid = Math.floor(nx / 2);
+  _buildVPlaneZ('latSection', extractLatSlice(ixMid), ny, nz, EXAG, palette, minVal, maxVal, scale, ixMid, nx);
 
   // Current particles
   _buildCurrentParticles(_modelData, EXAG);
@@ -533,67 +558,156 @@ async function _refreshModelLayers() {
   _applyLayerOpacity();
 }
 
+/**
+ * The field's real depth levels, or an even ladder when it is synthetic.
+ *
+ * The INCOIS grid is 5, 10, 20, 30, 50, 75, 100 ... 1800, 2000 m. Nothing in
+ * here may turn a level index into metres by dividing by nz.
+ */
+function _depths() {
+  const nz = _modelData?.grid?.nz ?? 1;
+  return _modelData?.depths
+      || Array.from({ length: nz }, (_, i) => (i / Math.max(1, nz - 1)) * VIEW.depthMax);
+}
+
+/**
+ * Level index nearest a depth in metres.
+ *
+ * The old `round(depthM / depthMax * (nz-1))` assumed the levels were evenly
+ * spaced. Against the real ladder it answers "level 1" — 10 m — for a request
+ * of 100 m, and the slider then labels a 10 m slice as 100 m.
+ */
+function _depthIndex(depthM) {
+  const d = _depths();
+  let best = 0;
+  for (let i = 1; i < d.length; i++) {
+    if (Math.abs(d[i] - depthM) < Math.abs(d[best] - depthM)) best = i;
+  }
+  return best;
+}
+
+/**
+ * Scene-space rectangle the field occupies.
+ *
+ * Not the same as the box. Cells are a fixed size on fixed centres, so a
+ * dragged selection snaps outward to whole cells and the field covers slightly
+ * more ground than was asked for. Drawing it across the box regardless would
+ * squeeze those cells to fit and shift every feature away from the floats
+ * plotted at their true positions.
+ */
+function _fieldRect() {
+  const b = _modelData?.bounds || VIEW;
+  const a = latLonDepthToScene(b.latMin, b.lonMin, 0);
+  const c = latLonDepthToScene(b.latMax, b.lonMax, 0);
+  return {
+    x0: a.x, z0: a.z,
+    w: c.x - a.x, d: c.z - a.z,
+    cx: (a.x + c.x) / 2, cz: (a.z + c.z) / 2,
+  };
+}
+
+/**
+ * Grid cell centre in scene X/Z.
+ *
+ * Texel centres sit at (i + 0.5) / n across a plane, so point geometry drawn
+ * over a textured field — isosurface vertices, current glyphs — has to use the
+ * same convention or it sits half a cell off the colour it belongs to.
+ */
+function _cellX(ix, nx, rect) { return rect.x0 + ((ix + 0.5) / nx) * rect.w; }
+function _cellZ(iy, ny, rect) { return rect.z0 + ((iy + 0.5) / ny) * rect.d; }
+
+/**
+ * Nearest-neighbour magnification, deliberately.
+ *
+ * The analysis is on a one-degree grid. Smoothing it across the screen would
+ * draw detail at a resolution the product does not have, and — now that land
+ * is transparent rather than coloured — would fringe every coastline with a
+ * half-transparent dark halo where it blended ocean into nothing.
+ */
+function _fieldTexture(texData, w, h) {
+  const cv = document.createElement('canvas');
+  cv.width = w; cv.height = h;
+  cv.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(texData), w, h), 0, 0);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.LinearFilter;
+  tex.needsUpdate = true;
+  return tex;
+}
+
 function _buildHPlane(name, slice, nx, ny, yPos, palette, minVal, maxVal, scale) {
   // Remove old
   if (layers[name]) { _oceanBoxGroup.remove(layers[name]); layers[name].geometry.dispose(); }
 
-  const texData = generateHeatmapTexture(slice, nx, ny, minVal, maxVal, palette, scale);
-  const imgData = new ImageData(new Uint8ClampedArray(texData), nx, ny);
-  const cv = document.createElement('canvas');
-  cv.width = nx; cv.height = ny;
-  cv.getContext('2d').putImageData(imgData, 0, 0);
+  const tex = _fieldTexture(
+    generateHeatmapTexture(slice, nx, ny, minVal, maxVal, palette, scale), nx, ny);
 
-  const tex = new THREE.CanvasTexture(cv);
-  tex.needsUpdate = true;
-
-  const geo = new THREE.PlaneGeometry(SCENE_W, SCENE_D);
+  const rect = _fieldRect();
+  const geo = new THREE.PlaneGeometry(rect.w, rect.d);
   geo.rotateX(-Math.PI / 2);
   const mat = new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true, opacity: State.get('layerOpacity'), depthWrite: false });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.name = name;
-  mesh.position.y = yPos;
+  mesh.position.set(rect.cx, yPos, rect.cz);
   _oceanBoxGroup.add(mesh);
   layers[name] = mesh;
 }
 
-function _buildVPlaneX(name, slice, nx, nz, exag, palette, minVal, maxVal, scale) {
+/**
+ * Rows in a vertical section image.
+ *
+ * The section is drawn on a plane whose height is linear in metres, so the
+ * field has to be resampled off its own uneven levels first. 128 rows over
+ * 2000 m is about 16 m a row — finer than the analysis anywhere below 100 m,
+ * and the vertical exaggeration control is what opens up the surface layer.
+ */
+const SECTION_ROWS = 128;
+
+function _buildVPlaneX(name, slice, nx, nz, exag, palette, minVal, maxVal, scale, iy, ny) {
   if (layers[name]) { _oceanBoxGroup.remove(layers[name]); layers[name].geometry.dispose(); }
 
-  const texData = generateHeatmapTexture(slice, nx, nz, minVal, maxVal, palette, scale);
-  const imgData = new ImageData(new Uint8ClampedArray(texData), nx, nz);
-  const cv = document.createElement('canvas');
-  cv.width = nx; cv.height = nz;
-  cv.getContext('2d').putImageData(imgData, 0, 0);
-  const tex = new THREE.CanvasTexture(cv);
+  const rows = resampleDepthRows(slice, nx, _depths(), SECTION_ROWS, VIEW.depthMax);
+  const tex = _fieldTexture(
+    generateHeatmapTexture(rows, nx, SECTION_ROWS, minVal, maxVal, palette, scale),
+    nx, SECTION_ROWS);
 
   const boxH = SCENE_H * exag;
-  const geo = new THREE.PlaneGeometry(SCENE_W, boxH);
+  const rect = _fieldRect();
+  const geo = new THREE.PlaneGeometry(rect.w, boxH);
   const mat = new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true, opacity: State.get('layerOpacity'), depthWrite: false });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.name = name;
-  mesh.position.set(0, -boxH / 2, 0);
+  // At the latitude of the row it shows. The array midpoint is not the box
+  // midpoint once a selection has snapped outward to whole cells, and the
+  // sheet has to sit where its data was sampled.
+  mesh.position.set(rect.cx, -boxH / 2, _cellZ(iy, ny, rect));
   mesh.rotation.x = 0;
   _oceanBoxGroup.add(mesh);
   layers[name] = mesh;
 }
 
-function _buildVPlaneZ(name, slice, ny, nz, exag, palette, minVal, maxVal, scale) {
+function _buildVPlaneZ(name, slice, ny, nz, exag, palette, minVal, maxVal, scale, ix, nx) {
   if (layers[name]) { _oceanBoxGroup.remove(layers[name]); layers[name].geometry.dispose(); }
 
-  const texData = generateHeatmapTexture(slice, ny, nz, minVal, maxVal, palette, scale);
-  const imgData = new ImageData(new Uint8ClampedArray(texData), ny, nz);
-  const cv = document.createElement('canvas');
-  cv.width = ny; cv.height = nz;
-  cv.getContext('2d').putImageData(imgData, 0, 0);
-  const tex = new THREE.CanvasTexture(cv);
+  const rows = resampleDepthRows(slice, ny, _depths(), SECTION_ROWS, VIEW.depthMax);
+  const tex = _fieldTexture(
+    generateHeatmapTexture(rows, ny, SECTION_ROWS, minVal, maxVal, palette, scale),
+    ny, SECTION_ROWS);
 
   const boxH = SCENE_H * exag;
-  const geo = new THREE.PlaneGeometry(SCENE_D, boxH);
+  const rect = _fieldRect();
+  const geo = new THREE.PlaneGeometry(rect.d, boxH);
   const mat = new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true, opacity: State.get('layerOpacity'), depthWrite: false });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.name = name;
-  mesh.position.set(0, -boxH / 2, 0);
-  mesh.rotation.y = Math.PI / 2;
+  mesh.position.set(_cellX(ix, nx, rect), -boxH / 2, rect.cz);
+  // Negative yaw, not positive. A plane's u=0 edge is at local -x; a +90 deg
+  // yaw maps that to +z, which is north, so the section was drawn with its
+  // southern column at the northern end of the box. Against a smooth
+  // synthetic field that was invisible; against a real one it is a mirrored
+  // ocean. Verified: with +PI/2 the u=0 edge lands at z=+5 while
+  // latLonDepthToScene puts latMin at z=-6.125.
+  mesh.rotation.y = -Math.PI / 2;
   _oceanBoxGroup.add(mesh);
   layers[name] = mesh;
 }
@@ -603,7 +717,7 @@ function _updateDepthSlicePlane() {
   const { grid, values } = _modelData;
   const { nx, ny, nz } = grid;
   const depthM  = State.get('depthSlice');
-  const depthIz = Math.round((depthM / DOMAIN.depthMax) * (nz - 1));
+  const depthIz = _depthIndex(depthM);
   const EXAG    = State.get('verticalExaggeration');
   const palette = State.get('colorbarPalette');
   const scale   = State.get('colorbarScale');
@@ -616,7 +730,10 @@ function _updateDepthSlicePlane() {
     for (let ix = 0; ix < nx; ix++)
       slice[iy * nx + ix] = values[clamp(depthIz, 0, nz-1) * ny * nx + iy * nx + ix];
 
-  _buildHPlane('depthSlice', slice, nx, ny, depthToSceneY(depthM, EXAG), palette, minVal, maxVal, scale);
+  // Positioned at the level actually being shown. Drawing it at the requested
+  // depth instead put the sheet at one depth and its values at another.
+  _buildHPlane('depthSlice', slice, nx, ny, depthToSceneY(_depths()[depthIz], EXAG),
+               palette, minVal, maxVal, scale);
   _buildCurrentVectors();
   _applyLayerVisibility();
 }
@@ -956,15 +1073,30 @@ function _buildIsosurface() {
   if (!Number.isFinite(thr)) return;
 
   const at = (ix, iy, iz) => values[iz * ny * nx + iy * nx + ix];
-  const depthAt = iz => (iz / (nz - 1)) * VIEW.depthMax;
+  // The field's own levels. Deriving depth from the index assumed even spacing
+  // and put D26 tens of metres off, which then propagates into TCHP.
+  const depths = _depths();
+  const depthAt = iz => depths[iz];
 
   // Crossing depth per column, or null where the threshold is never crossed
   const cross = new Array(nx * ny).fill(null);
+  // Columns that hold any data at all, so coverage is reported against ocean
+  // rather than against the bounding box: with real data roughly a third of
+  // the box is land, and counting it as "no isotherm" understates the surface.
+  let wet = 0;
   let minD = Infinity, maxD = -Infinity;
   for (let iy = 0; iy < ny; iy++) {
     for (let ix = 0; ix < nx; ix++) {
+      // Any finite level makes the column water. Testing only the surface
+      // missed columns the analysis resolves at depth but not at the top, and
+      // those still produce a crossing — which pushed coverage above 100%.
+      let anyData = false;
       for (let iz = 0; iz < nz - 1; iz++) {
         const a = at(ix, iy, iz), b = at(ix, iy, iz + 1);
+        if (Number.isFinite(a) || Number.isFinite(b)) anyData = true;
+        // A NaN makes this product NaN and the comparison false, so a hole is
+        // skipped rather than crossed. That is the behaviour we want and it is
+        // relied on here deliberately, not by accident.
         if ((a - thr) * (b - thr) <= 0 && a !== b) {
           const t = (thr - a) / (b - a);
           const d = lerp(depthAt(iz), depthAt(iz + 1), t);
@@ -974,6 +1106,7 @@ function _buildIsosurface() {
           break;                       // shallowest crossing wins
         }
       }
+      if (anyData) wet++;
     }
   }
   if (!Number.isFinite(minD)) return;  // threshold outside the field entirely
@@ -981,15 +1114,16 @@ function _buildIsosurface() {
   // Vertices, plus per-vertex colour by depth so the surface reads as a relief
   const verts = [], cols = [], index = [];
   const vidx = new Int32Array(nx * ny).fill(-1);
+  const rect = _fieldRect();
   let n = 0;
   for (let iy = 0; iy < ny; iy++) {
     for (let ix = 0; ix < nx; ix++) {
       const d = cross[iy * nx + ix];
       if (d === null) continue;
       verts.push(
-        (ix / (nx - 1) - 0.5) * SCENE_W,
+        _cellX(ix, nx, rect),
         depthToSceneY(d, EXAG),
-        (iy / (ny - 1) - 0.5) * SCENE_D
+        _cellZ(iy, ny, rect)
       );
       // Shallow isotherm = warm column shoaling; deep = thick warm layer
       const t = maxD > minD ? (d - minD) / (maxD - minD) : 0.5;
@@ -1032,7 +1166,10 @@ function _buildIsosurface() {
   _isoStats = {
     threshold: thr,
     minDepth: minD, maxDepth: maxD,
-    coverage: cross.filter(v => v !== null).length / (nx * ny),
+    coverage: cross.filter(v => v !== null).length / Math.max(1, wet || nx * ny),
+    // Stated so "82% coverage" cannot be read as 82% of the map when a third
+    // of the map is land.
+    ofWater: wet > 0 && wet < nx * ny,
   };
   State.set('isoStats', _isoStats);
 }
@@ -1061,10 +1198,11 @@ function _buildCurrentVectors() {
   const { nx, ny, nz } = d.grid;
   const EXAG = State.get('verticalExaggeration');
   const depthM = State.get('depthSlice');
-  const iz = clamp(Math.round((depthM / VIEW.depthMax) * (nz - 1)), 0, nz - 1);
+  const iz = clamp(_depthIndex(depthM), 0, nz - 1);
   // Clear of the depth-slice plane it annotates. Too small an offset and the
-  // glyphs are lost behind the stack of translucent planes.
-  const y = depthToSceneY(depthM, EXAG) + 0.18;
+  // glyphs are lost behind the stack of translucent planes. Placed at the
+  // level's own depth so the glyphs sit on the sheet they belong to.
+  const y = depthToSceneY(_depths()[iz], EXAG) + 0.18;
 
   const STEP = Math.max(1, Math.round(nx / 18));   // ~18 glyphs across
   const cells = [];
@@ -1099,11 +1237,9 @@ function _buildCurrentVectors() {
   const up = new THREE.Vector3(0, 1, 0);
   const maxLen = (SCENE_W / 18) * 0.9;
 
+  const rect = _fieldRect();
   cells.forEach((c, i) => {
-    pos.set(
-      (c.ix / (nx - 1) - 0.5) * SCENE_W, y,
-      (c.iy / (ny - 1) - 0.5) * SCENE_D
-    );
+    pos.set(_cellX(c.ix, nx, rect), y, _cellZ(c.iy, ny, rect));
     // sqrt scaling: a linear length map makes slow flow invisible next to fast
     const len = Math.sqrt(c.sp / vmax) * maxLen;
     // Screen +X is east, +Z is south, so a northward v rotates negative
@@ -1124,7 +1260,10 @@ function _buildCurrentVectors() {
   layers.currentVectors = inst;
 
   // A reference magnitude, or glyph length means nothing quantitative
-  State.set('vectorScale', { maxSpeed: vmax, unit: 'm s⁻¹', glyphs: cells.length, depthM });
+  // The level the glyphs were sampled from, not the slider position: the two
+  // differ by up to 100 m once the levels are the real uneven ones.
+  State.set('vectorScale', { maxSpeed: vmax, unit: 'm s⁻¹', glyphs: cells.length,
+                             depthM: _depths()[iz] });
 }
 
 /**
@@ -1151,17 +1290,37 @@ function _computeTCHP() {
   const T_REF = 26;      // degC
 
   const out = new Float32Array(nx * ny);
-  const dz = VIEW.depthMax / (nz - 1);
+  // Real layer thicknesses. A single averaged step is not an approximation
+  // here, it is a different quantity: the levels run 5 m apart at the surface
+  // and 200 m apart at the bottom, and almost all of this integral lives in
+  // the top hundred metres where a mean step is twenty times too thick.
+  const depths = _depths();
   let min = Infinity, max = -Infinity;
 
   for (let iy = 0; iy < ny; iy++) {
     for (let ix = 0; ix < nx; ix++) {
-      let joules = 0;
+      const col = iy * nx + ix;
+      const surf = values[col];
+      // Land, or water the analysis did not resolve. NaN so the layer leaves a
+      // hole; zero would paint a continent as ocean that happens to hold no
+      // heat, which is a reading a viewer has no way to distinguish.
+      if (!Number.isFinite(surf)) { out[col] = NaN; continue; }
+
+      // The shallowest level is 5 m, not 0. That water is inside the mixed
+      // layer, so it is counted at the top level's temperature rather than
+      // discarded — a few percent of a ~100 m warm layer, not a rounding error.
+      let joules = surf > T_REF ? RHO * CP * (surf - T_REF) * depths[0] : 0;
+
       for (let iz = 0; iz < nz - 1; iz++) {
-        const a = values[iz * ny * nx + iy * nx + ix];
-        const b = values[(iz + 1) * ny * nx + iy * nx + ix];
-        if (a <= T_REF) break;                    // below D26: contributes nothing
+        const a = values[iz * ny * nx + col];
+        const b = values[(iz + 1) * ny * nx + col];
+        // `!(a > T_REF)` rather than `a <= T_REF`: every comparison against NaN
+        // is false, so the old form did not fire on a hole and let NaN into the
+        // running total, which then reached the colour lookup and threw.
+        if (!(a > T_REF)) break;                  // at or below D26, or no data
+        if (!Number.isFinite(b)) break;           // seafloor between two levels
         // Trapezoid over the part of the layer that is still above 26 degC
+        const dz = depths[iz + 1] - depths[iz];
         const frac = b >= T_REF ? 1 : (a - T_REF) / (a - b);
         const meanExcess = b >= T_REF
           ? ((a - T_REF) + (b - T_REF)) / 2
@@ -1170,11 +1329,14 @@ function _computeTCHP() {
         if (b < T_REF) break;
       }
       const kJcm2 = joules / 1e7;                 // J m-2 -> kJ cm-2
-      out[iy * nx + ix] = kJcm2;
+      out[col] = kJcm2;
       if (kJcm2 < min) min = kJcm2;
       if (kJcm2 > max) max = kJcm2;
     }
   }
+  // Every column masked: nothing to report, and Infinity in the readout is
+  // worse than an absent one.
+  if (!Number.isFinite(min)) return null;
   return { values: out, nx, ny, min, max };
 }
 
@@ -1193,19 +1355,19 @@ function _buildTCHPLayer() {
   // Fixed 0-160 kJ cm-2 scale, NOT auto-scaled to this frame: the ~50-60
   // threshold only means anything if the colour for a value is stable across
   // regions and timesteps.
-  const texData = generateHeatmapTexture(t.values, t.nx, t.ny, 0, 160, 'thermal', 'linear');
-  const cv = document.createElement('canvas');
-  cv.width = t.nx; cv.height = t.ny;
-  cv.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(texData), t.nx, t.ny), 0, 0);
+  const tex = _fieldTexture(
+    generateHeatmapTexture(t.values, t.nx, t.ny, 0, 160, 'thermal', 'linear'), t.nx, t.ny);
 
-  const geo = new THREE.PlaneGeometry(SCENE_W, SCENE_D);
+  const rect = _fieldRect();
+  const geo = new THREE.PlaneGeometry(rect.w, rect.d);
   geo.rotateX(-Math.PI / 2);
   const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
-    map: new THREE.CanvasTexture(cv), side: THREE.DoubleSide,
+    map: tex, side: THREE.DoubleSide,
     transparent: true, opacity: 0.95, depthWrite: false,
   }));
   mesh.name = 'tchp';
-  mesh.position.y = 0.45;          // just above the sea surface plane
+  // just above the sea surface plane
+  mesh.position.set(rect.cx, 0.45, rect.cz);
   mesh.renderOrder = 2;
   _oceanBoxGroup.add(mesh);
   layers.tchp = mesh;

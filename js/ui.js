@@ -8,7 +8,7 @@
 
 import State from './state.js';
 import { PLUGIN_REGISTRY, VARIABLE_META, getProfile, getDataProvenance,
-         getObservationWindow } from './dataService.js';
+         getObservationWindow, getModelFrames, getModelLevels } from './dataService.js';
 import { drawProfileChart, drawColorbar, drawDepthGauge } from './charts.js';
 import { beginAreaDrag, updateAreaDrag, endAreaDrag, cancelAreaDrag,
          clearAreaSelection, rebuildForBounds, captureFrame } from './scene.js';
@@ -83,6 +83,7 @@ export function initUI(onCanvasClick) {
   State.subscribe('verticalExaggeration', () => _updateScaleBadge());
   State.subscribe('vectorScale',        () => _updateVectorKey());
   State.subscribe('tchpStats',          () => _updateTchpKey());
+  State.subscribe('modelFrame',         () => _updateDateNote());
   State.subscribe('depthSlice',         () => _updateVectorKey());
   State.subscribe('timelineIndex',      () => _updateTimeline());
   State.subscribe('layers',             () => { _syncLayerCheckboxes(); _updateTchpKey(); _updateVectorKey(); });
@@ -207,7 +208,14 @@ function _wireControls() {
   // Date. Bounded to the period we actually hold observations for — see
   // _constrainDateToObservations().
   DOM.dateInput.value = State.get('selectedDate');
-  DOM.dateInput.addEventListener('change', e => State.set('selectedDate', e.target.value));
+  DOM.dateInput.addEventListener('change', e => {
+    // An emptied date input reports '' and still fires change. Letting that
+    // through makes Date.parse NaN everywhere downstream: the field silently
+    // falls back to the first frame in the file, months from what was on
+    // screen, and the export strip is stamped "NaN yr before requested ".
+    if (e.target.value) State.set('selectedDate', e.target.value);
+    else e.target.value = State.get('selectedDate');
+  });
   _constrainDateToObservations();
 
   // Timestep
@@ -217,13 +225,28 @@ function _wireControls() {
     State.set('timelineIndex', idx);
   });
 
-  // Depth
+  // Depth. Snapped to the levels the field is actually defined on — 5, 10, 20,
+  // 30, 50, 75, 100 ... 1800 m — so the readout, the exported provenance strip
+  // and the sheet on screen all name the same depth. A free slider let the
+  // label claim 340 m while the nearest computed level was 300.
+  // Read per event, not once at wiring: currents and chlorophyll have no real
+  // counterpart and render on the synthetic even ladder, so snapping those to
+  // the INCOIS levels would label the sheet with a depth it is not at.
+  const snap = v => {
+    const levels = getModelLevels(State.get('activeVariable'));
+    return levels ? levels.reduce((a, b) => Math.abs(b - v) < Math.abs(a - v) ? b : a) : v;
+  };
   DOM.depthSlider.value = State.get('depthSlice');
   DOM.depthReadout.textContent = `${State.get('depthSlice')} m`;
   DOM.depthSlider.addEventListener('input', e => {
-    const v = parseInt(e.target.value);
+    const levels = getModelLevels(State.get('activeVariable'));
+    const v = snap(parseInt(e.target.value));
+    // Move the thumb to the level that was chosen. Without this the control
+    // sits at the dragged position while its own readout, the depth gauge and
+    // the exported strip all name the snapped one.
+    e.target.value = v;
     State.set('depthSlice', v);
-    DOM.depthReadout.textContent = `${v} m`;
+    DOM.depthReadout.textContent = levels ? `${v} m · level` : `${v} m`;
   });
 
   // Vertical exaggeration
@@ -281,9 +304,9 @@ function _wireControls() {
  */
 async function _constrainDateToObservations() {
   const win = await getObservationWindow();
-  const note = document.getElementById('date-note');
   if (!win) {
-    if (note) note.textContent = 'Synthetic field: any date.';
+    _obsNote = '';
+    _updateDateNote();
     return;
   }
 
@@ -292,16 +315,54 @@ async function _constrainDateToObservations() {
   DOM.dateInput.min = start;
   DOM.dateInput.max = end;
 
+  // Open on the newest frame the field actually holds. Both layers are real
+  // now and the analysis runs about a month behind the floats, so opening on
+  // the last observation date would put a month-stale field under fresh
+  // observations — the exact mismatch the offset readout exists to expose.
   const current = State.get('selectedDate');
-  if (current < start || current > end) {
-    // Snap into coverage rather than leaving the model two years from the floats
-    DOM.dateInput.value = end;
-    State.set('selectedDate', end);
-  }
+  const frames = getModelFrames() || [];
+  const usable = frames.map(t => t.slice(0, 10)).filter(d => d >= start && d <= end);
+  const open = usable.length ? usable[usable.length - 1]
+             : (current < start || current > end ? end : null);
+  DOM.dateInput.value = open || current;
+  // Only when it actually moves: State.set notifies regardless, and the
+  // 'selectedDate' subscribers rebuild the whole field and every marker.
+  if (open && open !== current) State.set('selectedDate', open);
 
-  if (note) {
-    note.textContent = `Argo coverage ${start} to ${end} · ${win.count} profiles`;
+  _obsNote = `Argo coverage ${start} to ${end} · ${win.count} profiles`;
+  _updateDateNote();
+}
+
+let _obsNote = '';
+
+/**
+ * What the date control is actually bound to, on both sides.
+ *
+ * The observations constrain the range; the field constrains the resolution.
+ * The analysis is ten-daily, so most dates in the range have no field of their
+ * own and the nearest frame is shown instead — which the reader has to be told,
+ * or a date picker that accepts any day implies a field for any day.
+ */
+function _updateDateNote() {
+  const note = document.getElementById('date-note');
+  if (!note) return;
+  const mf = State.get('modelFrame');
+  const frames = getModelFrames();
+  const bits = [_obsNote];
+  if (mf && frames) {
+    const off = _offsetParts(mf.offsetMs);
+    bits.push(`field frame ${mf.time.slice(0, 10)}`
+      + (off.txt === 'same day' ? '' : ` (${off.txt})`));
+    // Not "ten-day": --max-frames subsamples the ten-daily axis, so the
+    // bundled frames sit 20-31 days apart and saying otherwise understates
+    // how far the nearest frame can be from the date asked for.
+    const gaps = frames.slice(1).map((t, i) =>
+      (Date.parse(t) - Date.parse(frames[i])) / 86400000);
+    bits.push(gaps.length
+      ? `${frames.length} frames, ${Math.round(Math.min(...gaps))}–${Math.round(Math.max(...gaps))} d apart`
+      : `${frames.length} frame`);
   }
+  note.textContent = bits.filter(Boolean).join(' · ') || 'Synthetic field: any date.';
 }
 
 function _populateTimestepSelect() {
@@ -378,7 +439,9 @@ async function _exportPNG() {
   frame.src = captureFrame();
   await new Promise(res => { frame.onload = res; });
 
-  const STRIP = 118;
+  // Tall enough for the lowest baseline: y0 is frame.height + 26 and the
+  // instrument-window line sits at y0 + 98, so anything under ~136 clips it.
+  const STRIP = 138;
   const out = document.createElement('canvas');
   out.width = frame.width;
   out.height = frame.height + STRIP;
@@ -407,14 +470,24 @@ async function _exportPNG() {
   // Everything a reader needs to reproduce or challenge the figure
   c.fillStyle = 'rgba(223,240,239,0.62)';
   c.font = "11px 'IBM Plex Mono', monospace";
+  // The extent of the cells drawn, not the box requested. A dragged selection
+  // snaps outward to whole grid cells, and a figure that names the request
+  // instead of the data is the failure this strip exists to prevent.
+  const ext = State.get('modelFrame')?.bounds || VIEW;
   const line1 = [
-    `${_hemi(VIEW.lonMin,'EW')}–${_hemi(VIEW.lonMax,'EW')}`,
-    `${_hemi(VIEW.latMin,'NS')}–${_hemi(VIEW.latMax,'NS')}`,
+    `${_hemi(ext.lonMin,'EW')}–${_hemi(ext.lonMax,'EW')}`,
+    `${_hemi(ext.latMin,'NS')}–${_hemi(ext.latMax,'NS')}`,
     `depth slice ${State.get('depthSlice')} m`,
     `vert. exag. ${State.get('verticalExaggeration')}×`,
   ].join('   ·   ');
+  // The frame drawn, not the date requested. A ten-day analysis has no field
+  // at an arbitrary instant, and a figure that names the request rather than
+  // the data is exactly the sort of thing this strip exists to prevent.
+  const mf = State.get('modelFrame');
   const line2 = [
-    `${State.get('selectedDate')} ${State.get('selectedTimestep')} UTC`,
+    mf
+      ? `frame ${mf.time.slice(0, 10)} (${_offsetLabel(mf.offsetMs)} requested ${State.get('selectedDate')})`
+      : `${State.get('selectedDate')} ${State.get('selectedTimestep')} UTC`,
     `palette ${State.get('colorbarPalette')}`,
     `scale ${State.get('colorbarScale')} ${Number(State.get('colorbarMin') ?? meta.defaultMin)}–${Number(State.get('colorbarMax') ?? meta.defaultMax)}`,
     iso && State.get('layers.isosurface') !== false
@@ -424,13 +497,42 @@ async function _exportPNG() {
   c.fillText(line1, L, y0 + 46);
   c.fillText(line2, L, y0 + 64);
 
-  // The honesty line: which half of what you are looking at is measured
+  // The honesty line: which half of what you are looking at is measured.
+  // Stated for the variable actually exported — temperature and salinity come
+  // from the INCOIS grid, currents and chlorophyll are still generated, and one
+  // sentence covering both would be false about one of them.
   c.font = "11px 'IBM Plex Mono', monospace";
-  c.fillStyle = '#ff8a5c';
-  const provText = prov.argo.real
-    ? `Observations: real (Argo GDAC, ${prov.argo.floats + (prov.bgc?.floats || 0)} floats, QC flags ${prov.argo.qc.keptFlags.join('/')})   ·   Model field: SYNTHETIC`
-    : 'All data synthetic';
-  c.fillText(provText, L, y0 + 82);
+  const variable = State.get('activeVariable');
+  const fieldReal = prov.model.real && prov.model.realVariables.includes(variable);
+  const cen = prov.argo.census;
+  // The frame contains four observation classes, not one. Attributing all of
+  // them to "Argo GDAC" was wrong even on the healthy path — gliders come from
+  // the OceanGliders GDAC, CTD from CCHDO/GO-SHIP, moorings from the GTS — and
+  // when instruments.json fails to load the registry silently falls back to
+  // the mock generators, so the strip was captioning six synthetic markers
+  // "real", in green.
+  const inst = prov.instruments;
+  const instReal = !!inst && Object.values(inst).every(v => v.real);
+  const obs = prov.argo.real
+    ? `Observations: Argo GDAC ${prov.argo.distinctFloats} floats`
+      + (cen ? ` of ${cen.floats} in basin, ${cen.incois} INCOIS-managed` : '')
+      + `, QC flags ${prov.argo.qc.keptFlags.join('/')}`
+    : 'Observations: synthetic';
+  const instText = inst
+    ? ['glider', 'ctd', 'mooring'].map(k => inst[k].real
+        ? `${k} ${inst[k].window[0]}–${inst[k].window[1]}`
+        : `${k} SYNTHETIC`).join(', ')
+    : 'gliders/CTD/moorings SYNTHETIC';
+  const field = fieldReal
+    ? `Field: real (${prov.model.dataset}, ${prov.model.levels} levels to ${prov.model.depthRange[1]} m)`
+    : 'Field: SYNTHETIC';
+  // Green only when nothing in the frame is generated — which now includes the
+  // instrument markers, not just the floats and the field.
+  c.fillStyle = prov.argo.real && fieldReal && instReal ? '#63e6be' : '#ff8a5c';
+  c.fillText(`${obs}   ·   ${field}`, L, y0 + 82);
+  c.fillStyle = 'rgba(223,240,239,0.62)';
+  c.font = "10px 'IBM Plex Mono', monospace";
+  c.fillText(instText, L, y0 + 98);
 
   c.textAlign = 'right';
   c.fillStyle = 'rgba(223,240,239,0.38)';
@@ -455,6 +557,10 @@ function _wireExport() {
   if (btn) btn.addEventListener('click', () => _exportPNG());
   // Expose for the smoke test; harmless and keeps the export path verifiable
   window.__exportPNG = _exportPNG;
+  // Same reason: the profile panel now renders four different instrument
+  // classes with different vertical units and different QC provenance, and
+  // that is worth being able to exercise without hunting a marker in 3D.
+  window.__openProfile = _openProfilePanel;
 }
 
 /**
@@ -543,9 +649,13 @@ function _wireIsosurface() {
       return;
     }
     note.className = 'ctrl-note';
+    // "of the water", not "of the region": with a real field about a fifth of
+    // the box is land, and counting that as somewhere the isotherm is missing
+    // would report a hole in the data where there is a coastline.
+    const of = s.ofWater ? 'of the water' : 'of the region';
     note.textContent =
       `${Math.round(s.minDepth)}–${Math.round(s.maxDepth)} m` +
-      (pct < 100 ? ` · present over ${pct}% of the region` : ' · full coverage');
+      (pct < 100 ? ` · present over ${pct}% ${of}` : ` · all ${of.slice(3)}`);
   });
 
   State.subscribe('activeVariable', applyRange);
@@ -641,31 +751,88 @@ function _wireAreaSelection() {
 
 /**
  * Say which data is real and which is synthetic, permanently and in the chrome.
- * The observations are genuine Argo GDAC; the model field is not. Leaving that
- * ambiguous is the kind of thing that turns a good demo into a bad question.
+ *
+ * Both halves are now stated from the provenance record rather than asserted in
+ * a literal: the model field became real for temperature and salinity but
+ * stayed synthetic for currents and chlorophyll, and a badge that generalises
+ * either way would be wrong about half the app.
  */
 async function _renderProvenanceBadge() {
   const el = document.getElementById('provenance-badge');
   if (!el) return;
   const p = await getDataProvenance();
   if (p.argo.real) {
-    const n = p.argo.floats + (p.bgc?.real ? p.bgc.floats : 0);
-    el.textContent = `ARGO LIVE · ${n} FLOATS`;
+    // Distinct platforms, not core + BGC: several floats carry both sensor
+    // sets and appear in each list, so the sum claimed floats that do not
+    // exist and disagreed with the count in the exported strip.
+    el.textContent = `ARGO LIVE · ${p.argo.distinctFloats} FLOATS`;
     el.classList.add('is-real');
     el.title =
       `Core Argo: ${p.argo.profiles} QC'd T/S profiles from ${p.argo.floats} floats\n` +
       (p.bgc?.real
         ? `BGC: ${p.bgc.profiles} chlorophyll profiles from ${p.bgc.floats} floats\n`
         : '') +
-      `Gliders, CTD, moorings: synthetic (no public data in this domain)\n` +
+      _instrumentLines(p.instruments) +
       `Source: ${p.argo.source}\n` +
       `Window: ${p.argo.timeRange.join(' to ')}\n` +
       `QC: kept flags ${p.argo.qc.keptFlags.join(', ')}\n` +
-      `Model field: synthetic\n\n${p.argo.attribution}`;
+      _censusLines(p.argo) +
+      _modelProvenanceLines(p.model) +
+      `\n${p.argo.attribution}` +
+      (p.model.real ? `\n\n${p.model.attribution}` : '');
   } else {
     el.textContent = 'SYNTHETIC DATA';
     el.title = 'Real Argo data could not be loaded; showing synthetic floats.';
   }
+}
+
+/**
+ * The three instrument classes that used to be generated, and what they are now.
+ *
+ * Each is listed with its own window, because they do not share one: the
+ * moorings are current, the last glider left this basin in 2022 and the CTD
+ * casts are research cruises. Collapsing that into a single "real" would hide
+ * the thing a reader most needs to know before comparing one to a 2026 field.
+ */
+function _instrumentLines(inst) {
+  if (!inst) return 'Gliders, CTD, moorings: synthetic (no data loaded)\n';
+  const label = { glider: 'Gliders', ctd: 'CTD casts', mooring: 'Moorings' };
+  return Object.entries(inst).map(([k, v]) => {
+    if (!v.real) return `${label[k]}: synthetic\n`;
+    const w = v.window[0] === v.window[1] ? v.window[0] : `${v.window[0]} to ${v.window[1]}`;
+    return `${label[k]}: real — ${v.platforms} platforms, ${v.profiles} profiles, ${w}` +
+           `${v.qcFlags ? '' : ' (no per-level QC flags)'}\n`;
+  }).join('');
+}
+
+/**
+ * The float population, and India's share of it.
+ *
+ * The bundled floats are a stratified sample, not the network: quoting "16
+ * floats" alone understates the basin by an order of magnitude, while quoting
+ * the census alone would imply all of them are drawn. Both, together, with the
+ * sample shown to match the population it came from.
+ */
+function _censusLines(argo) {
+  const c = argo.census;
+  if (!c) return '';
+  const pct = Math.round(100 * c.incois / Math.max(1, c.floats));
+  const mine = Object.entries(argo.byDataCentre || {})
+    .sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join(', ');
+  return `Basin: ${c.floats} floats reported in this window, ` +
+         `${c.incois} INCOIS-managed (${pct}%)\n` +
+         `  shown: ${argo.floats}, sampled per data centre (${mine})\n`;
+}
+
+/** The model half of the provenance tooltip, per variable. */
+function _modelProvenanceLines(m) {
+  if (!m?.real) return 'Model field: synthetic\n';
+  const g = m.grid;
+  return `Model field: real for ${m.realVariables.join(', ')} — ${m.source}\n` +
+    `  grid ${g.nx}×${g.ny}×${m.levels} levels, ${m.depthRange[0]}–${m.depthRange[1]} m\n` +
+    `  ${m.frames} frames, ${m.timeRange[0].slice(0, 10)} to ${m.timeRange[1].slice(0, 10)}\n` +
+    (m.syntheticVariables.length
+      ? `  still synthetic: ${m.syntheticVariables.join(', ')}\n` : '');
 }
 
 /**
@@ -799,11 +966,14 @@ async function _openProfilePanel(platform) {
 
   const regEntry = PLUGIN_REGISTRY.find(e => e.id === platform.type);
 
-  // Update header
+  // Update header. The identifier is named for what it actually is: a WMO
+  // number belongs to a float or a GTS buoy, but a glider carries a deployment
+  // name and a CTD cast carries a cruise ExpoCode, and calling either of those
+  // a WMO number would be inventing a registration that does not exist.
   const typeLabel = regEntry?.label || platform.type;
-  DOM.profileTitle.textContent = platform.real
-    ? `${typeLabel} — WMO ${platform.platformId}`
-    : `${typeLabel} — ${platform.platformId}`;
+  const idLabel = platform.real ? (regEntry?.idLabel || '') : '';
+  DOM.profileTitle.textContent =
+    `${typeLabel} — ${idLabel ? idLabel + ' ' : ''}${platform.platformId}`;
 
   // Build variable toggle buttons from plugin registry
   const vars = regEntry?.profileVariables || ['temperature'];
@@ -819,7 +989,9 @@ async function _openProfilePanel(platform) {
   ctx.clearRect(0, 0, DOM.profileChart.width, DOM.profileChart.height);
 
   // Fetch the profile nearest the selected model timestep
-  const pd = await getProfile(platform.platformId, _selectedModelTimeISO());
+  // The type matters: a float can be in both the core and BGC lists, and an
+  // id alone would resolve to whichever source is checked first.
+  const pd = await getProfile(platform.platformId, _selectedModelTimeISO(), platform.type);
   State.set('profileData', pd);
   _renderProfileMeta(platform, pd);
 
@@ -829,11 +1001,38 @@ async function _openProfilePanel(platform) {
     const series = pd.variables?.[b.dataset.var];
     const empty = !series || !series.some(v => v !== null && Number.isFinite(v));
     b.classList.toggle('depleted', empty);
-    b.title = empty ? 'No levels survived quality control' : '';
+    // Only meaningful where the source ships per-level flags; a glider or a
+    // moored buoy with no salinity simply never reported any.
+    b.title = empty
+      ? (pd.qcFlags ? 'No levels survived quality control'
+                    : 'Not reported by this platform')
+      : '';
   });
 
   drawProfileChart(DOM.profileChart, pd, _profileActiveVar);
 }
+
+/**
+ * How far apart two instants are, in the coarsest unit that stays honest, plus
+ * a class grading it: a same-day comparison means something, a year apart does
+ * not. Shared by the profile chips and the exported provenance strip, which
+ * both have to say how far the thing on screen is from the frame behind it.
+ */
+function _offsetParts(ms) {
+  // Belt and braces alongside the date-input guard: every comparison below is
+  // false against NaN, so an unguarded non-finite offset falls through to the
+  // year branch and reads "NaN yr before".
+  if (!Number.isFinite(ms)) return { txt: 'offset unknown', cls: 'is-mock' };
+  const days = ms / 86400000;
+  const mag = Math.abs(days);
+  const dir = days >= 0 ? 'after' : 'before';
+  if (mag < 1)   return { txt: 'same day',                    cls: 'is-real' };
+  if (mag <= 5)  return { txt: `${mag.toFixed(1)} d ${dir}`,  cls: 'is-real' };
+  if (mag <= 31) return { txt: `${Math.round(mag)} d ${dir}`, cls: '' };
+  return { txt: `${(mag / 365).toFixed(1)} yr ${dir}`, cls: 'is-mock' };
+}
+
+function _offsetLabel(ms) { return _offsetParts(ms).txt; }
 
 /**
  * Provenance strip. For real Argo this states the Argo data mode, the cycle,
@@ -853,18 +1052,18 @@ function _renderProfileMeta(platform, pd) {
   // from the frame is exactly as misleading as a real one.
   const offset = pd?.offsetMs ?? (when ? Date.parse(when) - Date.parse(_selectedModelTimeISO()) : null);
   if (offset !== null && Number.isFinite(offset)) {
-    const days = offset / 86400000;
-    const mag = Math.abs(days);
-    const dir = days >= 0 ? 'after' : 'before';
-    let txt, cls;
-    if (mag < 1)        { txt = 'Same day as model frame';            cls = 'is-real'; }
-    else if (mag <= 5)  { txt = `${mag.toFixed(1)} d ${dir} model frame`; cls = 'is-real'; }
-    else if (mag <= 31) { txt = `${Math.round(mag)} d ${dir} model frame`; cls = ''; }
-    else                { txt = `${(mag / 365).toFixed(1)} yr ${dir} model frame`; cls = 'is-mock'; }
+    const { txt: base, cls } = _offsetParts(offset);
+    const txt = base === 'same day' ? 'Same day as model frame' : `${base} model frame`;
     bits.push(`<span class="meta-item ${cls}" title="Offset between this profile and the selected model timestep"><i class="ph ph-arrows-left-right"></i>${esc(txt)}</span>`);
   }
 
-  if (pd?.real) {
+  // The vertical coordinate is whichever the instrument actually reported.
+  // A moored buoy reports depth in metres and carries no pressure at all.
+  const levels = pd?.pressureDbar || pd?.depths;
+  const vUnit = pd?.pressureDbar ? 'dbar' : 'm';
+
+  if (pd?.real && pd.dataMode) {
+    // Argo, core or BGC: data mode and cycle number are Argo-specific.
     const modeLabel = { R: 'Real-time', A: 'Adjusted', D: 'Delayed mode' }[pd.dataMode] || pd.dataMode;
     bits.push(
       `<span class="meta-item is-real"><i class="ph ph-seal-check"></i>Argo GDAC</span>`,
@@ -874,8 +1073,25 @@ function _renderProfileMeta(platform, pd) {
       `<span class="meta-item" title="Argo CYCLE_NUMBER: profiles since deployment"><i class="ph ph-arrows-clockwise"></i>Cycle ${esc(pd.cycle)}</span>`,
       `<span class="meta-item" title="Cycles bundled in this build">${esc(pd.cycleCount)} in track</span>`,
       `<span class="meta-item" title="Argo data mode">${esc(modeLabel)}${pd.adjusted ? ' · adjusted' : ' · raw'}</span>`,
-      `<span class="meta-item"><i class="ph ph-gauge"></i>${pd.pressureDbar.length} levels to ${Math.round(Math.max(...pd.pressureDbar))} dbar</span>`
+      `<span class="meta-item"><i class="ph ph-gauge"></i>${levels.length} levels to ${Math.round(Math.max(...levels))} dbar</span>`
     );
+  } else if (pd?.real) {
+    // A glider dive, a ship CTD cast or a moored-buoy profile.
+    bits.push(`<span class="meta-item is-real"><i class="ph ph-seal-check"></i>${esc(pd.sourceShort || 'Observed')}</span>`);
+    if (pd.station) {
+      bits.push(`<span class="meta-item" title="Cruise station and cast"><i class="ph ph-map-pin"></i>Stn ${esc(pd.station)}/${esc(pd.cast)}</span>`);
+    }
+    if (pd.country && pd.country !== 'UNKNOWN') {
+      bits.push(`<span class="meta-item">${esc(pd.country)}</span>`);
+    }
+    bits.push(`<span class="meta-item" title="Profiles bundled for this platform">${esc(pd.cycleCount)} in track</span>`);
+    // Two of the three sources ship no per-level flags. Saying so is the
+    // difference between "quality controlled" and "range checked", and the
+    // panel should not let the reader assume the stronger one.
+    bits.push(pd.qcFlags
+      ? `<span class="meta-item is-real" title="Per-level quality flags applied (WOCE flag 2)"><i class="ph ph-check-circle"></i>QC flags</span>`
+      : `<span class="meta-item" title="Source ships no per-level QC flags; range and ordering checks only"><i class="ph ph-warning"></i>Range-checked only</span>`);
+    bits.push(`<span class="meta-item"><i class="ph ph-gauge"></i>${levels.length} levels to ${Math.round(Math.max(...levels))} ${vUnit}</span>`);
   } else {
     bits.push(`<span class="meta-item is-mock"><i class="ph ph-flask"></i>Synthetic</span>`);
   }
@@ -923,7 +1139,7 @@ function _updateVectorKey() {
   if (!on) return;
   el.innerHTML =
     `<span class="vk-arrow">&#10230;</span> longest glyph = ${vs.maxSpeed.toFixed(2)} ${esc(vs.unit)} ` +
-    `at ${vs.depthM} m<br>length &prop; &radic;speed &middot; ${vs.glyphs} glyphs, decimated`;
+    `at ${Math.round(vs.depthM)} m<br>length &prop; &radic;speed &middot; ${vs.glyphs} glyphs, decimated`;
 }
 
 /** Warn when a palette choice would misrepresent the field. */

@@ -61,27 +61,238 @@ const _argoReady = fetch('./js/data/argo.json')
     return null;
   });
 
+// ---------------------------------------------------------------------------
+// Real gridded model field
+// ---------------------------------------------------------------------------
+// js/data/model.json is the INCOIS objective analysis of Argo onto a regular
+// grid, fetched by tools/fetch_model.py. It is bundled for the same reason
+// argo.json is: none of these hosts send an Access-Control-Allow-Origin header,
+// so the browser cannot reach them directly whatever we do at this layer.
+//
+// It covers temperature and salinity only. Currents and chlorophyll have no
+// counterpart in this product and stay synthetic — labelled per variable, not
+// per app, so nothing inherits credibility from the layer next to it.
+let _modelDoc = null;
+const _modelReady = fetch('./js/data/model.json')
+  .then(r => r.ok ? r.json() : Promise.reject(new Error(`model.json ${r.status}`)))
+  .then(d => { _modelDoc = d; return d; })
+  .catch(err => {
+    console.warn('[INCOIS] Real model field unavailable, falling back to synthetic:', err.message);
+    return null;
+  });
+
+// ---------------------------------------------------------------------------
+// Real glider, CTD and mooring observations
+// ---------------------------------------------------------------------------
+// js/data/instruments.json, from tools/fetch_instruments.py. Three sources on
+// three servers, reduced to the same platform/profile contract the floats use,
+// so the scene and the profile panel needed no knowledge of any of them.
+//
+// They do not share a time window, and that is a property of the observing
+// network rather than an oversight: the moorings report three-hourly and are
+// current, the last glider left this basin in 2022, and the CTD casts are
+// research cruises going back to 2007. Each profile carries its own date and
+// the UI states the offset from the model frame.
+let _instDoc = null;
+const _instReady = fetch('./js/data/instruments.json')
+  .then(r => r.ok ? r.json() : Promise.reject(new Error(`instruments.json ${r.status}`)))
+  .then(d => { _instDoc = d; return d; })
+  .catch(err => {
+    console.warn('[INCOIS] Real instrument data unavailable, falling back to mock:', err.message);
+    return null;
+  });
+
+/** Which bundled group and source key each registry id reads from. */
+const INSTRUMENTS = {
+  glider:  { group: 'gliders',  source: 'glider',  short: 'OceanGliders GDAC' },
+  ctd:     { group: 'ctd',      source: 'ctd',     short: 'CCHDO / GO-SHIP' },
+  mooring: { group: 'moorings', source: 'mooring', short: 'Moored buoy (GTS)' },
+};
+
+/**
+ * A bundled instrument group as platform objects.
+ *
+ * `lat`/`lon` are the most recent profile's position. For a mooring that is
+ * fixed; for a glider or a ship it is the end of a path, and `track` carries
+ * the whole of it.
+ */
+function _realInstPlatforms(type) {
+  const spec = INSTRUMENTS[type];
+  const groups = _instDoc?.[spec.group];
+  if (!groups?.length) return null;
+  return groups.map(g => {
+    const last = g.cycles[g.cycles.length - 1];
+    return {
+      platformId: g.id,
+      type,
+      real: true,
+      lat: last.lat,
+      lon: last.lon,
+      lastUpdate: last.time,
+      cycleCount: g.cycles.length,
+      country: g.country,
+      kind: g.kind,
+      track: g.cycles.map(c => ({ lat: c.lat, lon: c.lon })),
+    };
+  });
+}
+
+/**
+ * One profile from a bundled instrument, nearest the selected model frame.
+ *
+ * The vertical coordinate is carried in the unit the instrument reports it in.
+ * A moored buoy reports depth in metres; a glider and a CTD report pressure in
+ * decibars. Relabelling one as the other is a small lie that the profile chart
+ * would then print on its axis, so `pressureDbar` is null for the buoys and
+ * the chart says "Depth (m)" on its own.
+ */
+function _realInstProfile(type, platformId, atTime) {
+  const spec = INSTRUMENTS[type];
+  const g = _instDoc?.[spec.group]?.find(x => x.id === platformId);
+  if (!g) return null;
+
+  let c = g.cycles[g.cycles.length - 1];
+  let offsetMs = null;
+  if (atTime) {
+    const t = Date.parse(atTime);
+    if (Number.isFinite(t)) {
+      c = g.cycles.reduce((best, cur) =>
+        Math.abs(Date.parse(cur.time) - t) < Math.abs(Date.parse(best.time) - t) ? cur : best);
+      offsetMs = Date.parse(c.time) - t;
+    }
+  }
+
+  const src = _instDoc.sources[spec.source];
+  const byDepth = src.verticalUnit === 'metre';
+  const levels = byDepth ? c.depths : c.pres;
+  const usableSalinity = c.psal.some(v => v !== null);
+
+  return {
+    platformId: g.id,
+    real: true,
+    lat: c.lat, lon: c.lon,
+    timestamps: [c.time],
+    // Only one of these is a measurement; the other is the display convenience.
+    pressureDbar: byDepth ? null : levels,
+    depths: levels,
+    variables: {
+      temperature: c.temp,
+      salinity: usableSalinity ? c.psal : null,
+    },
+    salinityRejected: !usableSalinity,
+    cycleCount: g.cycles.length,
+    thinned: !!c.thinned,
+    // Whether the source shipped per-level quality flags at all. Two of the
+    // three do not, and a profile panel that implied QC where there was none
+    // would be claiming more than the data supports.
+    qcFlags: src.qcFlags,
+    sourceLabel: src.dataset,
+    sourceShort: spec.short,
+    station: c.station, cast: c.cast, country: c.country,
+    offsetMs,
+    attribution: src.attribution,
+  };
+}
+
+/** Cropped fields, keyed by variable, frame and bounds. */
+const _fieldCache = new Map();
+
 /** Provenance for the UI: what is real, what is synthetic. */
 export async function getDataProvenance() {
-  await _argoReady;
+  await Promise.all([_argoReady, _modelReady, _instReady]);
   return {
     argo: _argoDoc
       ? { real: true, source: _argoDoc.source, generated: _argoDoc.generated,
           timeRange: _argoDoc.timeRange, attribution: _argoDoc.attribution,
           floats: _argoDoc.floats.length,
           profiles: _argoDoc.floats.reduce((n, f) => n + f.cycles.length, 0),
-          qc: _argoDoc.qc }
+          qc: _argoDoc.qc,
+          // The population the bundled floats were drawn from. The subset is
+          // stratified by data centre to match it, so both numbers describe
+          // the same basin rather than contradicting each other.
+          census: _argoDoc.census || null,
+          // Core and BGC are selected independently and do overlap — three
+          // WMOs are in both today. Summing the two counts and stating the
+          // total against a distinct-platform census would be wrong arithmetic
+          // in the one line that exists to be checkable.
+          distinctFloats: new Set([
+            ..._argoDoc.floats.map(f => f.wmo),
+            ...(_argoDoc.bgcFloats || []).map(f => f.wmo),
+          ]).size,
+          byDataCentre: _argoDoc.floats.reduce((m, f) => {
+            const dc = f.cycles[f.cycles.length - 1].dataCentre;
+            m[dc] = (m[dc] || 0) + 1; return m;
+          }, {}) }
       : { real: false },
     bgc: _argoDoc?.bgcFloats?.length
       ? { real: true, floats: _argoDoc.bgcFloats.length,
           profiles: _argoDoc.bgcFloats.reduce((n, f) => n + f.cycles.length, 0) }
       : { real: false },
-    model: { real: false, note: 'Synthetic field with physically plausible structure' },
+    model: _modelDoc
+      ? { real: true, source: _modelDoc.source, generated: _modelDoc.generated,
+          // Read off whichever variable was fetched: `--vars salinity`
+          // produces a file with no temperature, and hardcoding it stamped
+          // the exported figure with the literal string "undefined".
+          dataset: Object.values(_modelDoc.variables)[0]?.dataset,
+          attribution: _modelDoc.attribution,
+          grid: _modelDoc.grid, levels: _modelDoc.depths.length,
+          depthRange: [_modelDoc.depths[0], _modelDoc.depths[_modelDoc.depths.length - 1]],
+          frames: _modelDoc.times.length,
+          timeRange: [_modelDoc.times[0], _modelDoc.times[_modelDoc.times.length - 1]],
+          // Named individually: 'the model field is real' is only true of the
+          // two variables the product actually carries.
+          realVariables: Object.keys(_modelDoc.variables),
+          syntheticVariables: Object.keys(VARIABLE_META)
+            .filter(v => !(v in _modelDoc.variables)) }
+      : { real: false, note: 'Synthetic field with physically plausible structure' },
+    instruments: _instDoc
+      ? Object.fromEntries(Object.entries(INSTRUMENTS).map(([type, spec]) => {
+          const groups = _instDoc[spec.group] || [];
+          const src = _instDoc.sources[spec.source];
+          return [type, {
+            real: groups.length > 0,
+            platforms: groups.length,
+            profiles: groups.reduce((n, g) => n + g.cycles.length, 0),
+            window: src.window,
+            qcFlags: src.qcFlags,
+            dataset: src.dataset,
+            attribution: src.attribution,
+            note: src.note,
+          }];
+        }))
+      : null,
   };
 }
 
 /** Await before any call that may need real Argo data. */
-export function whenDataReady() { return _argoReady; }
+export function whenDataReady() {
+  return Promise.all([_argoReady, _modelReady, _instReady]);
+}
+
+/** True when this variable is served from the real INCOIS grid. */
+export function isModelVariableReal(variable) {
+  return !!_modelDoc?.variables?.[variable];
+}
+
+/** The frames the real field actually holds, for the date control. */
+export function getModelFrames() {
+  return _modelDoc ? _modelDoc.times.slice() : null;
+}
+
+/**
+ * The depth levels the field is defined on, or null when it is synthetic.
+ *
+ * Exported so the depth control can offer the levels that exist rather than a
+ * continuous slider over depths nothing was ever computed at.
+ */
+export function getModelLevels(variable) {
+  if (!_modelDoc) return null;
+  // Currents and chlorophyll fall through to the synthetic generator and its
+  // even ladder, so answering with the INCOIS levels for them would have the
+  // depth control label a sheet with a depth it is not drawn at.
+  if (variable && !_modelDoc.variables[variable]) return null;
+  return _modelDoc.depths.slice();
+}
 
 // ---------------------------------------------------------------------------
 // Variable metadata defaults
@@ -93,7 +304,12 @@ export function whenDataReady() { return _argoReady; }
 export const VARIABLE_META = {
   temperature: { label: 'Temperature', unit: '°C',   defaultMin: 2,   defaultMax: 32,  palette: 'thermal',
                  cfName: 'sea_water_potential_temperature' },
-  salinity:    { label: 'Salinity',    unit: 'PSU',  defaultMin: 34,  defaultMax: 37,  palette: 'haline',
+  // The floor is 32, not the 34 an open-ocean scale would use: the real field
+  // reaches 32.4 in the northern Bay of Bengal, where the Ganges-Brahmaputra
+  // discharge caps the surface with fresh water. A 34 floor clipped that entire
+  // signal to one flat colour — the synthetic field never left 34.6-35.1, so
+  // nothing showed it.
+  salinity:    { label: 'Salinity',    unit: 'PSU',  defaultMin: 32,  defaultMax: 37,  palette: 'haline',
                  cfName: 'sea_water_practical_salinity' },
   currents:    { label: 'Currents',    unit: 'm s⁻¹',defaultMin: 0,   defaultMax: 1.5, palette: 'speed',
                  cfName: 'sea_water_velocity' },
@@ -119,9 +335,133 @@ export const VARIABLE_META = {
  * }
  */
 export async function getModelField(variable, date, timestep) {
+  await _modelReady;
+  const real = _realModelField(variable, date, timestep);
+  if (real) return real;
   // ── REAL API SWAP: replace body with fetch() call ──
   await _delay(60);
   return _generateModelField(variable, date, timestep);
+}
+
+/**
+ * The real INCOIS field for this variable, cropped to the current VIEW, or null
+ * when the product does not carry the variable at all.
+ *
+ * Two things are reconciled here and neither is cosmetic.
+ *
+ * TIME. The product is a ten-day analysis; the app asks for an arbitrary date
+ * and one of four times of day. There is no frame at that instant and inventing
+ * one by interpolation would present a field nobody computed. The nearest frame
+ * is returned with `offsetMs` stating how far away it is, exactly as
+ * `_realArgoProfile` does for a float cycle.
+ *
+ * SPACE. Cells are a fixed one degree on half-degree centres, so a dragged
+ * selection almost never lands on a cell edge. The crop takes every cell whose
+ * area intersects the selection and reports the resulting cell-edge `bounds`.
+ * Stretching those cells to fill the requested box instead would move the
+ * ocean — up to several percent on a small selection — and quietly break the
+ * co-location between the field and the floats drawn on top of it.
+ */
+function _realModelField(variable, date, timestep) {
+  const doc = _modelDoc;
+  const v = doc?.variables?.[variable];
+  if (!v) return null;
+
+  const wanted = Date.parse(`${date}T${timestep}:00Z`);
+  let fi = 0;
+  if (Number.isFinite(wanted)) {
+    doc.times.forEach((t, i) => {
+      if (Math.abs(Date.parse(t) - wanted) < Math.abs(Date.parse(doc.times[fi]) - wanted)) fi = i;
+    });
+  }
+  // A frame the fetch could not retrieve is null; fall back to the nearest one
+  // that exists rather than rendering an empty box.
+  if (!v.frames[fi]) {
+    const ok = v.frames.map((f, i) => f ? i : -1).filter(i => i >= 0);
+    if (!ok.length) return null;
+    // Nearest in time, not in array position: --max-frames subsamples the
+    // ten-daily axis unevenly, so index distance is not time distance.
+    fi = ok.reduce((a, b) =>
+      Math.abs(Date.parse(doc.times[b]) - wanted) <
+      Math.abs(Date.parse(doc.times[a]) - wanted) ? b : a);
+  }
+
+  const key = `${variable}|${fi}|${VIEW.lonMin},${VIEW.lonMax},${VIEW.latMin},${VIEW.latMax}`;
+  const hit = _fieldCache.get(key);
+  // The date and timestep are display-only below the crop, so a cached field
+  // is re-stamped rather than recomputed. The tab and exaggeration controls
+  // both re-request the same field several times per interaction.
+  if (hit) return { ...hit, date, timestep, offsetMs: Date.parse(doc.times[fi]) - wanted };
+
+  const [ix0, ix1] = _cropAxis(doc.lons, VIEW.lonMin, VIEW.lonMax);
+  const [iy0, iy1] = _cropAxis(doc.lats, VIEW.latMin, VIEW.latMax);
+  const nx = ix1 - ix0 + 1, ny = iy1 - iy0 + 1, nz = doc.depths.length;
+  const src = v.frames[fi];
+  const sw = doc.grid.nx, sh = doc.grid.ny;
+
+  const values = new Float32Array(nx * ny * nz);
+  for (let iz = 0; iz < nz; iz++) {
+    for (let iy = 0; iy < ny; iy++) {
+      for (let ix = 0; ix < nx; ix++) {
+        const s = src[iz * sh * sw + (iy0 + iy) * sw + (ix0 + ix)];
+        // null is land or water the analysis did not resolve. It becomes NaN
+        // and stays a hole all the way to the pixel; see generateHeatmapTexture.
+        values[iz * ny * nx + iy * nx + ix] = s === null ? NaN : s;
+      }
+    }
+  }
+
+  const dLon = doc.lons[1] - doc.lons[0];
+  const dLat = doc.lats[1] - doc.lats[0];
+  const field = {
+    variable,
+    unit: (VARIABLE_META[variable] || VARIABLE_META.temperature).unit,
+    real: true,
+    source: doc.source,
+    dataset: v.dataset,
+    erddapVariable: v.erddapVariable,
+    sourceUnit: v.unit,
+    attribution: doc.attribution,
+    time: doc.times[fi],
+    frameIndex: fi,
+    frameCount: doc.times.length,
+    // Cell edges, not centres: this is the extent the field actually covers,
+    // and the renderer sizes the planes from it.
+    bounds: {
+      lonMin: doc.lons[ix0] - dLon / 2, lonMax: doc.lons[ix1] + dLon / 2,
+      latMin: doc.lats[iy0] - dLat / 2, latMax: doc.lats[iy1] + dLat / 2,
+      depthMin: DOMAIN.depthMin, depthMax: DOMAIN.depthMax,
+    },
+    grid: { nx, ny, nz },
+    lons: doc.lons.slice(ix0, ix1 + 1),
+    lats: doc.lats.slice(iy0, iy1 + 1),
+    // Uneven by nature. Every consumer that turns a level index into a depth,
+    // or integrates over depth, must read this rather than divide by nz.
+    depths: doc.depths,
+    values,
+  };
+  _fieldCache.set(key, field);
+  return { ...field, date, timestep, offsetMs: Date.parse(doc.times[fi]) - wanted };
+}
+
+/**
+ * Index range of the cells whose area intersects [lo, hi].
+ *
+ * Cell i covers half a step either side of its centre, so a cell counts as
+ * inside when its interval overlaps the request, not when its centre does.
+ * Always returns at least two indices: a one-cell field has no extent for the
+ * renderer to scale against.
+ */
+function _cropAxis(centres, lo, hi) {
+  const d = centres[1] - centres[0];
+  let i0 = centres.findIndex(c => c + d / 2 > lo);
+  if (i0 < 0) i0 = 0;
+  let i1 = i0;
+  for (let i = i0; i < centres.length; i++) if (centres[i] - d / 2 < hi) i1 = i;
+  if (i1 <= i0) {
+    if (i0 > 0) i0--; else i1 = Math.min(i0 + 1, centres.length - 1);
+  }
+  return [i0, i1];
 }
 
 // ---------------------------------------------------------------------------
@@ -150,7 +490,7 @@ export async function getInstrumentPlatforms(type, atTime) {
 }
 
 /**
- * getProfile(platformId)
+ * getProfile(platformId, atTime, type)
  *
  * Returns: { platformId, timestamps, depths, variables: { temp, sal, chl } }
  */
@@ -159,11 +499,31 @@ export async function getInstrumentPlatforms(type, atTime) {
  * @param {string} [atTime] ISO time of the selected model timestep. The float's
  *        cycle nearest that time is returned, so scrubbing the model date moves
  *        the observations instead of leaving one fixed profile on screen.
+ * @param {string} [type] PLUGIN_REGISTRY id the marker came from. Ids are only
+ *        unique within a source, so pass it whenever it is known.
  */
-export async function getProfile(platformId, atTime) {
-  await _argoReady;
-  const real = _realArgoProfile(platformId, atTime) || _realBgcProfile(platformId, atTime);
-  if (real) return real;
+export async function getProfile(platformId, atTime, type) {
+  await Promise.all([_argoReady, _instReady]);
+
+  // Resolve inside the source the marker came from. Identifiers are unique
+  // per source, not across them: five floats appear in both the core and BGC
+  // lists, and a moored buoy's WMO number shares a namespace with a float's.
+  // Without the type, the first source that recognised an id won — which
+  // handed a BGC marker its core temperature profile and left the chlorophyll
+  // chart with nothing to draw, for five of the sixteen BGC floats.
+  const lookup = {
+    argo:    () => _realArgoProfile(platformId, atTime),
+    bgc:     () => _realBgcProfile(platformId, atTime),
+    glider:  () => _realInstProfile('glider', platformId, atTime),
+    ctd:     () => _realInstProfile('ctd', platformId, atTime),
+    mooring: () => _realInstProfile('mooring', platformId, atTime),
+  };
+  // Omitting the type keeps the original behaviour for any caller that has
+  // only an id to go on.
+  for (const key of (lookup[type] ? [type] : Object.keys(lookup))) {
+    const real = lookup[key]();
+    if (real) return real;
+  }
   // ── REAL API SWAP: replace body with fetch() call ──
   await _delay(30);
   return _generateProfile(platformId, atTime);
@@ -222,6 +582,10 @@ function _realArgoProfile(platformId, atTime) {
       salinity: usableSalinity ? c.psal : null,
     },
     salinityRejected: !usableSalinity,
+    // Argo does ship per-level flags, so a missing salinity here really was
+    // rejected. The instrument sources mostly do not, and the chart has to be
+    // able to tell those two cases apart.
+    qcFlags: true,
     cycleCount: f.cycles.length,
     // Signed milliseconds from the selected model timestep to this profile.
     // Surfaced in the UI: an observation two years from the model frame must
@@ -260,6 +624,7 @@ export const PLUGIN_REGISTRY = [
   {
     id: 'argo',
     label: 'Argo Floats',
+    idLabel: 'WMO',
     markerColor: '#22d3ee',
     glowColor:   '#22d3ee88',
     profileVariables: ['temperature', 'salinity'],
@@ -275,24 +640,40 @@ export const PLUGIN_REGISTRY = [
   {
     id: 'glider',
     label: 'Gliders',
+    // Not a WMO number: gliders are identified by deployment.
+    idLabel: 'Deployment',
     markerColor: '#a78bfa',
     glowColor:   '#a78bfa88',
     profileVariables: ['temperature', 'salinity'],
+    // A glider really does fly a continuous path between dives, unlike a
+    // drifting float, so a spline through the dive positions is the honest
+    // shape here rather than an indicative link.
     trackStyle: 'spline',
-    fetchFn: async (atTime) => _mockGliderPlatforms(atTime),
+    fetchFn: async (atTime) => {
+      await _instReady;
+      return _realInstPlatforms('glider') || _mockGliderPlatforms(atTime);
+    },
   },
   {
     id: 'ctd',
     label: 'CTD Casts',
+    // A cruise ExpoCode, e.g. 325020250321 — ship, then sailing date.
+    idLabel: 'ExpoCode',
     markerColor: '#2dd4bf',
     glowColor:   '#2dd4bf88',
     profileVariables: ['temperature', 'salinity'],
-    trackStyle: 'none',
-    fetchFn: async (atTime) => _mockCTDPlatforms(atTime),
+    // One platform per cruise, one profile per cast, so the track is the
+    // section line the ship actually steamed.
+    trackStyle: 'link',
+    fetchFn: async (atTime) => {
+      await _instReady;
+      return _realInstPlatforms('ctd') || _mockCTDPlatforms(atTime);
+    },
   },
   {
     id: 'bgc',
     label: 'BGC Floats',
+    idLabel: 'WMO',
     markerColor: '#fb923c',
     glowColor:   '#fb923c88',
     profileVariables: ['chlorophyll'],
@@ -302,15 +683,20 @@ export const PLUGIN_REGISTRY = [
       return _realBgcPlatforms() || _mockBGCPlatforms(atTime);
     },
   },
-  // ── PROOF-OF-CONCEPT: new sensor — zero UI/scene code changed ──
   {
     id: 'mooring',
-    label: 'Moorings (stub)',
+    label: 'Moorings',
+    // Moored buoys on the GTS genuinely do carry WMO identifiers.
+    idLabel: 'WMO',
     markerColor: '#f472b6',
     glowColor:   '#f472b688',
     profileVariables: ['temperature', 'salinity'],
+    // Fixed position: the profiles stack at one point rather than tracing one.
     trackStyle: 'none',
-    fetchFn: async (atTime) => _mockMooringPlatforms(atTime),
+    fetchFn: async (atTime) => {
+      await _instReady;
+      return _realInstPlatforms('mooring') || _mockMooringPlatforms(atTime);
+    },
   },
 ];
 

@@ -17,9 +17,10 @@ const _state = {
   activeVariable: 'temperature',   // 'temperature' | 'salinity' | 'currents' | 'chlorophyll'
 
   // Date / time
-  // Inside the real Argo coverage window. Clamped at runtime to whatever
-  // js/data/argo.json actually holds, so this cannot drift out of range.
-  selectedDate: '2024-06-29',
+  // Inside the real Argo coverage window, and on a real analysis frame.
+  // Clamped at runtime to whatever js/data/argo.json holds and then snapped to
+  // the newest field frame, so re-running the fetchers moves this on its own.
+  selectedDate: '2026-07-30',
   selectedTimestep: '06:00',
   availableTimesteps: ['00:00', '06:00', '12:00', '18:00'],
 
@@ -38,6 +39,10 @@ const _state = {
   // the conventional floor of the cyclone-fuelling layer.
   isoValue: 26,
   isoStats: null,            // { threshold, minDepth, maxDepth, coverage }
+  // Which frame of the real field is on screen. The product is a ten-day
+  // analysis and the date control is continuous, so the frame shown is the
+  // nearest one and `offsetMs` says how far that is from what was asked for.
+  modelFrame: null,          // { time, offsetMs, index, count, dataset } | null
   vectorScale: null,         // { maxSpeed, unit, glyphs, depthM } for the legend
   tchpStats: null,           // { min, max, unit } for the derived-layer readout
 

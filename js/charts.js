@@ -44,16 +44,24 @@ export function drawProfileChart(canvas, profileData, activeVar = 'temperature',
     ctx.fillStyle = 'rgba(255,138,92,0.9)';
     ctx.font = '11.5px Geist, system-ui, sans-serif';
     ctx.textAlign = 'center';
-    // Say why there is nothing to draw. "No data" reads as a broken app; a
-    // QC rejection is a real, meaningful property of this float.
-    const msg = profileData.salinityRejected && activeVar === 'salinity'
-      ? 'Salinity rejected by QC'
+    // Say why there is nothing to draw. "No data" reads as a broken app; a QC
+    // rejection is a real, meaningful property of the profile. But only a
+    // source that actually ships per-level flags can claim one: the glider and
+    // mooring feeds ship none, and reporting "flagged bad" for a platform that
+    // simply never measured salinity contradicts the "Range-checked only" chip
+    // rendered from the same object in the same panel.
+    const qcRejected = activeVar === 'salinity'
+      && profileData.salinityRejected && profileData.qcFlags;
+    const msg = qcRejected ? 'Salinity rejected by QC'
+      : activeVar === 'salinity' ? 'Salinity not reported'
       : 'No data for this variable';
     ctx.fillText(msg, W / 2, H / 2 - 6);
     ctx.fillStyle = 'rgba(223,240,239,0.45)';
     ctx.font = '9.5px Geist, system-ui, sans-serif';
-    ctx.fillText(profileData.salinityRejected && activeVar === 'salinity'
-      ? 'Every level flagged bad on this float'
+    // "profile", not "float": the same string serves a glider dive, a ship
+    // cast and a moored buoy.
+    ctx.fillText(qcRejected
+      ? 'Every level flagged bad on this profile'
       : 'Not reported for this platform', W / 2, H / 2 + 10);
     return;
   }

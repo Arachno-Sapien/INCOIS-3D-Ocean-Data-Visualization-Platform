@@ -7,7 +7,7 @@ Argo data are freely available and collected by the International Argo Program.
 
 Run this to refresh the bundled observations:
 
-    python tools/fetch_argo.py                 # defaults below
+    python tools/fetch_argo.py                 # the last six months, to today
     python tools/fetch_argo.py --start 2024-01-01 --end 2024-12-31 --max-floats 12
 
 The output is committed so the app needs no network at runtime. A live backend
@@ -43,7 +43,7 @@ import urllib.parse
 import urllib.error
 import urllib.request
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 ERDDAP = "https://erddap.ifremer.fr/erddap/tabledap/ArgoFloats.json"
 ERDDAP_BGC = "https://erddap.ifremer.fr/erddap/tabledap/ArgoFloats-synthetic-BGC.json"
@@ -71,7 +71,7 @@ TEMP_RANGE = (-2.0, 35.0)     # degC
 PSAL_RANGE = (0.0, 42.0)      # PSU
 
 COLUMNS = [
-    "platform_number", "cycle_number", "data_mode", "direction",
+    "platform_number", "cycle_number", "data_mode", "data_center", "direction",
     "latitude", "longitude", "time", "position_qc",
     "profile_temp_qc", "profile_psal_qc",
     "pres", "pres_qc", "pres_adjusted", "pres_adjusted_qc",
@@ -145,8 +145,7 @@ def fetch_bgc(start, end, max_floats, max_levels):
         pres, chla = [pres[i] for i in keep], [chla[i] for i in keep]
 
         if len(pres) > max_levels:
-            step = len(pres) / max_levels
-            sel = sorted({min(len(pres) - 1, int(i * step)) for i in range(max_levels)})
+            sel = even_indices(len(pres), max_levels)
             pres, chla = [pres[i] for i in sel], [chla[i] for i in sel]
 
         head = levels[0]
@@ -170,6 +169,128 @@ def fetch_bgc(start, end, max_floats, max_levels):
     print(f"  {len(out)} BGC floats, {sum(len(f['cycles']) for f in out)} profiles"
           f"  rejected={dict(rejected)}")
     return out
+
+
+def even_indices(n, max_n):
+    """
+    Indices of at most max_n items spread evenly across n, both ends kept.
+
+    `int(i * n / max_n)` never reaches the last index. Thinning 1001 CTD levels
+    to 120 stopped at index 992, so every cast ended 16 dbar above where the
+    instrument did; subsampling a three-hourly mooring feed dropped the newest
+    eight casts, a full day off a source the app calls current. Anchoring on
+    n - 1 keeps the deepest level and the latest cast, which are the two the
+    rest of this app most depends on.
+    """
+    if n <= max_n:
+        return list(range(n))
+    if max_n <= 1:
+        return [n - 1]
+    return sorted({round(i * (n - 1) / (max_n - 1)) for i in range(max_n)})
+
+
+def default_window(months=6):
+    """
+    The window to fetch when none is given: the last `months` up to today.
+
+    A literal default goes stale the day it is written, and the whole point of
+    this script is to keep the bundled snapshot current. The window actually
+    used is written into the output as `timeRange`, so a committed file still
+    states exactly what it covers.
+    """
+    end = datetime.now(timezone.utc).date()
+    return (end - timedelta(days=months * 31)).isoformat(), end.isoformat()
+
+
+def census(start, end):
+    """
+    Every float that reported in the domain, counted by Data Assembly Centre.
+
+    The floats bundled below are a readable subset — the ones with the most
+    cycles, so their tracks are real trajectories rather than single dots. That
+    subset says nothing about who operates this basin, and a bare "16 floats"
+    reads as the whole picture when the real network is an order of magnitude
+    larger. This counts the population the subset is drawn from, and India's
+    share of it, which for an INCOIS problem statement is the number that
+    matters.
+    """
+    q = "platform_number,data_center" + (
+        f"&longitude>={LON_MIN}&longitude<={LON_MAX}"
+        f"&latitude>={LAT_MIN}&latitude<={LAT_MAX}"
+        f"&time>={start}T00:00:00Z&time<={end}T00:00:00Z"
+        "&distinct()"
+    )
+    url = ERDDAP + "?" + urllib.parse.quote(q, safe="=&,.:-()")
+    print("Counting the float population...")
+    try:
+        with urllib.request.urlopen(url, timeout=300) as r:
+            table = json.loads(r.read().decode("utf-8"))["table"]
+    except Exception as e:
+        # Context, not content. This runs after the multi-minute profile fetch
+        # and QC pass have already succeeded, so anything raised here — a
+        # timeout, a reset connection, a short body — must not throw that away.
+        # Deliberately broad for exactly that reason.
+        print(f"  census unavailable ({type(e).__name__}: {e}), continuing without it")
+        return None
+    idx = {n: i for i, n in enumerate(table["columnNames"])}
+    by_dc = defaultdict(set)
+    for row in table["rows"]:
+        # ERDDAP can return an empty data centre; '??' keeps it countable
+        # instead of putting a null key in the JSON and in the badge.
+        by_dc[row[idx["data_center"]] or "??"].add(row[idx["platform_number"]])
+    counts = {k: len(v) for k, v in sorted(by_dc.items(), key=lambda kv: -len(kv[1]))}
+    total = len(set().union(*by_dc.values())) if by_dc else 0
+    print(f"  {total} floats in the domain, by DAC: {counts}")
+    return {"floats": total, "byDataCentre": counts,
+            "incois": counts.get("IN", 0), "window": [start, end]}
+
+
+def select_floats(by_float, dac_of, counts, n):
+    """
+    Choose which floats to bundle: stratified across Data Assembly Centres in
+    proportion to each centre's share of the basin, and within a centre the
+    floats with the most cycles.
+
+    Ranking on cycle count alone is what this used to do, and against a
+    six-month window it returned sixteen floats of which not one was Indian --
+    while the census in the same file says INCOIS operates just under half the
+    floats in this domain. A displayed subset that contradicts the population
+    stated beside it is worse than a smaller subset, so the sample is now drawn
+    to match the basin it claims to represent. Cycle count still decides which
+    floats fill a centre's seats, so the tracks are still real trajectories
+    rather than isolated dots.
+    """
+    avail = defaultdict(list)
+    for wmo in by_float:
+        avail[dac_of[wmo]].append(wmo)
+    for dc in avail:
+        avail[dc].sort(key=lambda w: -len(by_float[w]))
+
+    # No census means no shares to apportion by; fall back to the old rule
+    # rather than inventing a distribution.
+    if not counts:
+        return sorted(by_float, key=lambda w: -len(by_float[w]))[:n]
+
+    # Highest averages (D'Hondt): each seat goes to the centre currently
+    # furthest below its entitlement that still has floats left.
+    #
+    # A largest-remainder pass followed by round-robin was wrong whenever the
+    # large centres ran out of floats: the leftover seats went to whoever had
+    # capacity rather than to whoever had a claim. On a thin pool that handed
+    # MEDS, which operates two of the 221 floats in this basin, eight of the
+    # sixteen seats. Allocating one seat at a time keeps the shares honest
+    # under any pool, and is shorter.
+    seats = {dc: 0 for dc in avail}
+    # A centre with floats in hand demonstrably operates here, so a census that
+    # omits it is incomplete — not a claim that it runs nothing.
+    share = {dc: counts.get(dc) or 1 for dc in avail}
+    for _ in range(min(n, len(by_float))):
+        room = [dc for dc in avail if seats[dc] < len(avail[dc])]
+        if not room:
+            break
+        seats[max(room, key=lambda d: (share[d] / (seats[d] + 1), share[d], d))] += 1
+
+    return sorted(w for dc in avail for w in avail[dc][:seats[dc]])
 
 
 def fetch(start, end):
@@ -217,6 +338,9 @@ def build(rows, idx):
         wmo, cycle = key
         head = meta[key]
         mode = head[idx["data_mode"]]
+        # The Data Assembly Centre that curated this profile: AO aoml, BO bodc,
+        # CS csiro, HZ csio, IF coriolis, IN incois, JA jma, KM kma, ME meds.
+        dc = head[idx["data_center"]] or "??"
 
         # Whole-profile flags: 'A' (all good) or 'B' (most good) only
         if head[idx["profile_temp_qc"]] not in (None, "", "A", "B"):
@@ -280,6 +404,7 @@ def build(rows, idx):
             "wmo": wmo,
             "cycle": cycle,
             "dataMode": mode,
+            "dataCentre": dc,
             "adjusted": used_adj,
             "lat": round(head[idx["latitude"]], 4),
             "lon": round(head[idx["longitude"]], 4),
@@ -295,10 +420,11 @@ def build(rows, idx):
 
 
 def main():
+    d_start, d_end = default_window()
     ap = argparse.ArgumentParser()
-    ap.add_argument("--start", default="2024-01-01")
-    ap.add_argument("--end", default="2024-09-30")
-    ap.add_argument("--max-floats", type=int, default=10)
+    ap.add_argument("--start", default=d_start)
+    ap.add_argument("--end", default=d_end)
+    ap.add_argument("--max-floats", type=int, default=16)
     ap.add_argument("--max-levels", type=int, default=140,
                     help="thin each profile to at most this many levels (no interpolation)")
     args = ap.parse_args()
@@ -308,11 +434,16 @@ def main():
     if not profiles:
         sys.exit("No profiles survived QC. Widen the time window.")
 
-    # Keep the floats with the most cycles: they give real trajectories.
+    # The census comes first: it is what the selection apportions seats by.
+    pop = census(args.start, args.end)
+
     by_float = defaultdict(list)
+    dac_of = {}
     for p in profiles:
         by_float[p["wmo"]].append(p)
-    chosen = sorted(by_float, key=lambda w: -len(by_float[w]))[: args.max_floats]
+        dac_of[p["wmo"]] = p["dataCentre"]
+    chosen = select_floats(by_float, dac_of,
+                           (pop or {}).get("byDataCentre"), args.max_floats)
 
     floats = []
     for wmo in sorted(chosen):
@@ -322,8 +453,7 @@ def main():
             if n > args.max_levels:
                 # Thin by index. Deliberately NOT interpolation: resampling onto
                 # nominal depths would invent values Argo never measured.
-                step = n / args.max_levels
-                keep = sorted({min(n - 1, int(i * step)) for i in range(args.max_levels)})
+                keep = even_indices(n, args.max_levels)
                 for k in ("pres", "temp", "psal"):
                     p[k] = [p[k][i] for i in keep]
                 p["thinned"] = True
@@ -342,6 +472,9 @@ def main():
                    "latMin": LAT_MIN, "latMax": LAT_MAX},
         "timeRange": [args.start, args.end],
         "qc": {"keptFlags": sorted(GOOD_QC), "rejected": rejected},
+        # The population these floats were selected from, so the UI can say how
+        # much of the basin is shown and who operates the rest of it.
+        "census": pop,
         "units": {"pres": "decibar", "temp": "degree_Celsius", "psal": "PSU",
                   "chla": "mg m-3"},
         "floats": floats,
@@ -359,8 +492,9 @@ def main():
     print("rejected:", rejected)
     for f in floats:
         c = f["cycles"]
-        print(f"  {f['wmo']}  cycles={len(c):3d}  mode={c[-1]['dataMode']}  "
-              f"levels={c[-1]['nLevels']:3d}  maxP={max(c[-1]['pres']):.0f} dbar")
+        print(f"  {f['wmo']}  dac={c[-1]['dataCentre']:2s}  cycles={len(c):3d}  "
+              f"mode={c[-1]['dataMode']}  levels={c[-1]['nLevels']:3d}  "
+              f"maxP={max(c[-1]['pres']):.0f} dbar")
 
 
 if __name__ == "__main__":
