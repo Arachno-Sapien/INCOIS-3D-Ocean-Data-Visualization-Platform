@@ -346,8 +346,14 @@ file**, not the window that was requested. Snapshot taken 2026-08-31.
 | Moorings | 2026-07-17 00:00 | **2026-08-31 09:00** | 5 | 166 |
 | CTD casts | 2007-04-06 12:32 | **2025-04-23 13:43** | 5 | 200 |
 | Gliders | 2016-06-30 04:14 | **2022-10-14 04:10** | 7 | 210 |
-| Model field | 2026-02-28 | **2026-07-30** | 8 frames | — |
+| Model field (T, S) | 2026-02-28 | **2026-07-30** | 8 frames | — |
+| Currents (u, v) | 2026-02-28 | 2026-06-20 (6/8 real) | 8 frames requested | — |
 | *Cyclone Mocha (separate)* | *2023-04-30* | *2023-05-20* | *3 frames · 51 fixes · 12 floats* | *24* |
+
+Currents' latest real frame trails the model field's by 40 days: GLORYS is a
+reanalysis and runs behind INCOIS's live ten-day analysis, so the app's two
+newest dates fall past its coverage and are served the nearest earlier frame
+with the offset stated, same as every other lagging source above.
 
 All times UTC. These figures move every time the fetchers run; to print the
 current ones rather than trusting this table:
@@ -355,6 +361,7 @@ current ones rather than trusting this table:
 ```bash
 python tools/fetch_instruments.py --check
 python tools/fetch_model.py --check
+python tools/fetch_currents.py --check
 python tools/fetch_cyclone.py --check     # the separate May 2023 snapshot
 ```
 
@@ -1900,7 +1907,7 @@ data that was stale, unadjusted, or quality-flagged.
 **Data**
 - [x] Real Argo GDAC profiles with QC (16 floats, 456 profiles, stratified by data centre)
 - [x] Real BGC chlorophyll from adjusted fields (16 floats, 343 profiles)
-- [ ] Real current vectors from Copernicus Marine GLORYS12V1 — script written (`tools/fetch_currents.py`), needs a Copernicus Marine account to run
+- [x] Real current vectors from Copernicus Marine GLORYS12V1 (6/8 model frames real, 41×36×24 grid; the 2 newest fall past GLORYS's own coverage and state their offset like every other source that lags)
 - [ ] Real NetCDF/OPeNDAP model fields — blocks everything in the hazard section
 - [ ] Glider feed (data exists, no temporal overlap and no QC flags; see above)
 - [ ] RAMA mooring feed (sites in domain; PMEL redirects to an unreachable mirror)
