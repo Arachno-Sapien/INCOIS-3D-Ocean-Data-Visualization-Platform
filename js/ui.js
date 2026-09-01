@@ -67,6 +67,7 @@ export function initUI(onCanvasClick) {
 
   _wireViewMode();
   _wireAreaSelection();
+  _wireGlobeTheme();
   _wireIsosurface();
   _wireCaseStudy();
   _wireExport();
@@ -1101,6 +1102,33 @@ function _wireViewMode() {
   };
   State.subscribe('viewMode', apply);
   apply(State.get('viewMode'));
+}
+
+/** Overview-only basemap choice. It changes visual context, never the data layer. */
+function _wireGlobeTheme() {
+  const picker = document.getElementById('globe-theme');
+  if (!picker) return;
+  const buttons = [...picker.querySelectorAll('[data-globe-theme]')];
+
+  const sync = theme => {
+    buttons.forEach(button => {
+      const active = button.dataset.globeTheme === theme;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-checked', String(active));
+    });
+  };
+
+  picker.addEventListener('click', event => {
+    const button = event.target.closest('[data-globe-theme]');
+    if (!button || button.disabled) return;
+    const theme = button.dataset.globeTheme;
+    if (theme === State.get('globeTheme')) return;
+    State.set('globeTheme', theme);
+    try { window.localStorage.setItem('incois-globe-theme', theme); } catch { /* optional preference */ }
+  });
+
+  State.subscribe('globeTheme', sync);
+  sync(State.get('globeTheme'));
 }
 
 /** Keep checkboxes in step with state changed from elsewhere (e.g. the Argo tab). */

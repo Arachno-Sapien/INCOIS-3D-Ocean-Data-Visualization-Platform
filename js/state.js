@@ -13,6 +13,10 @@ const _state = {
   // 'volume' — the depth-resolved box for the selected region
   viewMode: 'globe',
 
+  // Overview appearance. Kept separately from the active scientific variable:
+  // it changes the geographic context, never the data being analysed.
+  globeTheme: _savedGlobeTheme(),
+
   // Active variable tab
   activeVariable: 'temperature',   // 'temperature' | 'salinity' | 'currents' | 'chlorophyll'
 
@@ -78,6 +82,17 @@ const _state = {
   layersPanelOpen: true,
   profilePanelOpen: false,
 };
+
+function _savedGlobeTheme() {
+  try {
+    const value = window.localStorage.getItem('incois-globe-theme');
+    return value === 'nasa' || value === 'digital' ? value : 'digital';
+  } catch {
+    // Private browsing or a locked-down webview can deny storage. The visual
+    // preference is non-essential, so retain the safe in-memory default.
+    return 'digital';
+  }
+}
 
 // Per-key subscriber lists
 const _subscribers = {};

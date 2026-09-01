@@ -6,9 +6,9 @@
  * and the Ocean Observation Network map shows clickable instrument pins.
  * This does both on a sphere, then flies into the depth-resolved volume.
  *
- * Everything renders procedurally from embedded coastline data: no image
- * texture, no runtime fetch, so the opening view cannot be broken by the
- * venue's network.
+ * The default theme renders procedurally from embedded coastline data. The
+ * optional NASA theme loads one bundled local image, never an external tile
+ * service, so the overview remains safe to use without venue internet.
  *
  * The globe owns no state. scene.js drives visibility and the camera.
  */
@@ -18,6 +18,24 @@ import { COASTLINE } from './coastline.js';
 import { DOMAIN } from './constants.js';
 
 export const GLOBE_R = 8;
+export const DEFAULT_GLOBE_THEME = 'digital';
+
+export const GLOBE_THEMES = Object.freeze({
+  digital: Object.freeze({
+    label: 'Digital Ocean',
+    showGraticule: true,
+    coastlineOpacity: 0.62,
+    atmosphereColor: 0x63e6be,
+  }),
+  nasa: Object.freeze({
+    label: 'NASA Blue Marble',
+    showGraticule: false,
+    coastlineOpacity: 0.12,
+    atmosphereColor: 0x69c9d5,
+  }),
+});
+
+const NASA_TEXTURE_URL = './assets/textures/nasa-blue-marble-january-5400.jpg';
 
 /**
  * Geographic position to a point on the globe.
@@ -29,8 +47,8 @@ export function latLonToGlobe(lat, lon, alt = 0) {
   const r = GLOBE_R * (1 + alt);
   return new THREE.Vector3(
     -r * Math.sin(phi) * Math.cos(theta),
-     r * Math.cos(phi),
-     r * Math.sin(phi) * Math.sin(theta)
+    r * Math.cos(phi),
+    r * Math.sin(phi) * Math.sin(theta)
   );
 }
 
@@ -57,7 +75,7 @@ export function buildLatLonPatch(bounds, { alt = 0.008, color = 0x63e6be, opacit
   for (let j = 0; j <= NV; j++) {
     for (let i = 0; i <= NU; i++) {
       const p = latLonToGlobe(latMin + (latMax - latMin) * (j / NV),
-                              lonMin + (lonMax - lonMin) * (i / NU), alt);
+        lonMin + (lonMax - lonMin) * (i / NU), alt);
       verts.push(p.x, p.y, p.z);
     }
   }
@@ -84,7 +102,7 @@ export function buildLatLonOutline(bounds, { alt = 0.010, color = 0x8ff5d6, opac
   const edge = (aLat, aLon, bLat, bLon, n) => {
     for (let k = 0; k <= n; k++) {
       ring.push(latLonToGlobe(aLat + (bLat - aLat) * k / n,
-                              aLon + (bLon - aLon) * k / n, alt));
+        aLon + (bLon - aLon) * k / n, alt));
     }
   };
   edge(latMin, lonMin, latMin, lonMax, 24);
@@ -142,7 +160,8 @@ export function buildGlobe(platforms, registry) {
   const gratMat = track(new THREE.LineBasicMaterial({
     color: 0x5f9fb0, transparent: true, opacity: 0.16,
   }));
-  group.add(new THREE.LineSegments(gratGeo, gratMat));
+  const graticule = new THREE.LineSegments(gratGeo, gratMat);
+  group.add(graticule);
 
   // ── Coastlines ────────────────────────────────────────────────────────
   const coastPts = [];
@@ -158,7 +177,8 @@ export function buildGlobe(platforms, registry) {
   const coastMat = track(new THREE.LineBasicMaterial({
     color: 0x9fe8dc, transparent: true, opacity: 0.62,
   }));
-  group.add(new THREE.LineSegments(coastGeo, coastMat));
+  const coastlines = new THREE.LineSegments(coastGeo, coastMat);
+  group.add(coastlines);
 
   // ── Atmospheric rim ───────────────────────────────────────────────────
   // Backside sphere with a view-angle falloff. Reads as depth at the limb
@@ -185,7 +205,8 @@ export function buildGlobe(platforms, registry) {
     transparent: true,
     depthWrite: false,
   }));
-  group.add(new THREE.Mesh(atmoGeo, atmoMat));
+  const atmosphere = new THREE.Mesh(atmoGeo, atmoMat);
+  group.add(atmosphere);
 
   // ── Model domain ──────────────────────────────────────────────────────
   // The exact extent the volume view renders, drawn with the same builders the
@@ -234,11 +255,86 @@ export function buildGlobe(platforms, registry) {
     group.add(stem);
   }
 
+  let nasaMaterial = null;
+  let nasaTexture = null;
+  let nasaTexturePromise = null;
+  let themeRequest = 0;
+
+  const loadNasaTexture = () => {
+    if (nasaTexture) return Promise.resolve(nasaTexture);
+    if (!nasaTexturePromise) {
+      nasaTexturePromise = new THREE.TextureLoader().loadAsync(NASA_TEXTURE_URL)
+        .then(texture => {
+          // This is satellite colour imagery, unlike the app's data textures.
+          texture.colorSpace = THREE.SRGBColorSpace;
+          texture.anisotropy = 2;
+          nasaTexture = texture;
+          disposables.push(texture);
+          return texture;
+        })
+        .catch(error => {
+          nasaTexturePromise = null; // permit a later retry after a deployment fix
+          throw error;
+        });
+    }
+    return nasaTexturePromise;
+  };
+
+  const applyOverlayTheme = theme => {
+    graticule.visible = theme.showGraticule;
+    coastMat.opacity = theme.coastlineOpacity;
+    atmoMat.uniforms.uColor.value.setHex(theme.atmosphereColor);
+  };
+
+  const setTheme = async requestedTheme => {
+    const name = GLOBE_THEMES[requestedTheme] ? requestedTheme : DEFAULT_GLOBE_THEME;
+    const request = ++themeRequest;
+    const theme = GLOBE_THEMES[name];
+
+    if (name === 'digital') {
+      sphere.material = oceanMat;
+      applyOverlayTheme(theme);
+      group.userData.globeTheme = name;
+      return name;
+    }
+
+    const texture = await loadNasaTexture();
+    // Ignore a completed image request if the user already picked another theme.
+    if (request !== themeRequest) return group.userData.globeTheme;
+
+    if (!nasaMaterial) {
+      // Use a neutral white emissive so the satellite texture's own colours
+      // (vivid blue ocean, tan/brown land, white clouds) read at full fidelity.
+      // A tinted emissive suppresses every hue that is not in that tint; white
+      // emissive is additive across the full spectrum.
+      // emissiveIntensity drives overall brightness: 0.72 ≈ the reference image.
+      nasaMaterial = track(new THREE.MeshPhongMaterial({
+        map: texture,
+        emissiveMap: texture,
+        color: 0xffffff,
+        emissive: 0xffffff,
+        emissiveIntensity: 0.72,
+        shininess: 4,
+        specular: 0x112233,
+      }));
+    }
+    sphere.material = nasaMaterial;
+    applyOverlayTheme(theme);
+    group.userData.globeTheme = name;
+    return name;
+  };
+
+  // Digital stays the first paint, including when the saved NASA selection is
+  // loading, so no slow asset can leave the overview blank.
+  applyOverlayTheme(GLOBE_THEMES.digital);
+  group.userData.globeTheme = DEFAULT_GLOBE_THEME;
+
   return {
     group,
     pins,
     domainHitbox,
     sphere,
+    setTheme,
     dispose() {
       disposables.forEach(d => d.dispose && d.dispose());
     },

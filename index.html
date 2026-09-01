@@ -824,6 +824,45 @@
     #area-tools button:focus-visible { outline: 2px solid var(--lumen); outline-offset: 2px; }
     #area-tools button.hidden { display: none; }
 
+    /* Appearance is deliberately kept beside Select area: it changes only the
+       overview's geographic context, not the scientific variable tabs. */
+    #globe-theme {
+      display: inline-flex; align-items: center; gap: 3px;
+      padding: 3px;
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-edge);
+      border-radius: var(--r-pill);
+      backdrop-filter: blur(var(--blur));
+      -webkit-backdrop-filter: blur(var(--blur));
+      box-shadow: var(--shadow-press), var(--shadow-panel);
+    }
+    #globe-theme-label {
+      padding: 0 5px 0 7px;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+      font-size: 9px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    #area-tools #globe-theme button {
+      gap: 0;
+      padding: 5px 9px;
+      border-color: transparent;
+      background: transparent;
+      color: var(--text-secondary);
+      font-size: 10.5px;
+    }
+    #area-tools #globe-theme button.active {
+      background: var(--lumen-haze);
+      border-color: var(--lumen-dim);
+      color: var(--text-primary);
+    }
+    #area-tools #globe-theme button.active:hover { transform: none; }
+    @media (max-width: 700px) {
+      #globe-theme-label { display: none; }
+      #area-tools #globe-theme button { padding: 5px 7px; }
+    }
+
     /* Armed: the next drag draws a box. Uses the selection hue, not the app
        accent, so it matches the box being drawn on the globe. */
     #area-select-btn.armed {
@@ -1511,6 +1550,13 @@
 
 <!-- ── AREA SELECTION (globe only) ───────────────────────────── -->
 <div id="area-tools">
+  <div id="globe-theme" role="radiogroup" aria-label="Overview globe appearance">
+    <span id="globe-theme-label">Globe</span>
+    <button type="button" role="radio" data-globe-theme="digital"
+            aria-checked="true" title="Use the digital ocean globe">Digital</button>
+    <button type="button" role="radio" data-globe-theme="nasa"
+            aria-checked="false" title="Use NASA Blue Marble satellite imagery">NASA</button>
+  </div>
   <button id="area-select-btn" type="button" title="Drag a box on the globe to choose a region">
     <i class="ph ph-selection-plus" aria-hidden="true"></i>
     <span>Select area</span>

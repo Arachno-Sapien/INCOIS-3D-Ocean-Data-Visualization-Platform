@@ -811,12 +811,14 @@ camera arrives. The **Overview** button returns to the globe.
 The camera *flies* rather than cuts, deliberately: the transition is what
 explains that the box you land in is the region you just clicked.
 
-**Rendering.** The globe is fully procedural — an ocean sphere, a graticule,
-coastlines, a view-angle atmospheric rim, and a tessellated domain patch that
-curves with the surface. There is **no image texture and no runtime fetch**:
-`coastline.js` embeds Natural Earth 1:110m coastline (public domain),
-Douglas-Peucker simplified from 5128 to 1581 vertices. A venue with bad wifi
-cannot break the opening view.
+**Rendering.** The default Digital Ocean globe is procedural — an ocean sphere,
+a graticule, coastlines, a view-angle atmospheric rim, and a tessellated domain
+patch that curves with the surface. Users can also select **NASA Blue Marble**
+from the Overview picker. Its locally bundled 5400×2700 January base map is
+from [NASA Visible Earth, Blue Marble: Next Generation (MODIS)](https://science.nasa.gov/earth/earth-observatory/blue-marble-next-generation/base-map/),
+so it never depends on a tile server or venue wifi. The source record is in
+`assets/textures/NASA_BLUE_MARBLE_ATTRIBUTION.md`. `coastline.js` embeds Natural Earth 1:110m coastline
+(public domain), Douglas-Peucker simplified from 5128 to 1581 vertices.
 
 **No auto-rotate.** A slow idle spin looks good in isolation but carries the
 domain and the pins off screen while the user reads the hint. The globe is a

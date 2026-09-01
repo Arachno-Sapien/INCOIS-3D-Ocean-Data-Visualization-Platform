@@ -24,7 +24,7 @@ import { latLonDepthToScene, depthToSceneY, seededNoise, generateHeatmapTexture,
 import { DOMAIN, VIEW, SCENE_W, SCENE_D, SCENE_H,
          setViewBounds, resetViewBounds, MIN_SELECTION_DEG,
          TCHP_THRESHOLD, D26_THRESHOLD } from './constants.js';
-import { buildGlobe, latLonToGlobe, globeToLatLon, GLOBE_R,
+import { buildGlobe, latLonToGlobe, globeToLatLon, GLOBE_R, DEFAULT_GLOBE_THEME,
          buildLatLonPatch, buildLatLonOutline } from './globe.js';
 
 let renderer, camera, controls, scene;
@@ -132,6 +132,7 @@ export async function initScene(canvas) {
   // Overview globe, built from the same platform list as the volume markers
   _globe = buildGlobe(await getAllPlatforms(), PLUGIN_REGISTRY);
   scene.add(_globe.group);
+  _applyGlobeTheme(State.get('globeTheme'));
   _applyViewMode(State.get('viewMode'), true);
 
   // State subscriptions — re-render when relevant state changes
@@ -154,6 +155,7 @@ export async function initScene(canvas) {
     State.set('selectedTimestep', ts);
   });
   State.subscribe('viewMode',       v  => _applyViewMode(v, false));
+  State.subscribe('globeTheme',     _applyGlobeTheme);
 
   // Resize handler
   window.addEventListener('resize', _onResize);
@@ -162,6 +164,17 @@ export async function initScene(canvas) {
   _renderLoop();
 
   return { renderer, scene, camera };
+}
+
+/** Apply a geographic-context theme without rebuilding the globe or hit targets. */
+function _applyGlobeTheme(theme) {
+  if (!_globe) return;
+  _globe.setTheme(theme).catch(error => {
+    console.warn('[INCOIS] NASA globe texture failed to load; using Digital Ocean.', error);
+    if (State.get('globeTheme') !== DEFAULT_GLOBE_THEME) {
+      State.set('globeTheme', DEFAULT_GLOBE_THEME);
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
