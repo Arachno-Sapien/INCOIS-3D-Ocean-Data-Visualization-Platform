@@ -283,9 +283,9 @@ field, which the accent gradient previously fought.
 
 ## 📊 Where every layer's data comes from
 
-Six data classes, five servers, four fetch scripts. Nothing in the app is
-generated except the currents and chlorophyll fields, which have no
-credential-free source for this basin.
+Seven data classes, six servers, five fetch scripts. Nothing in the app is
+generated except the chlorophyll field, which has no credential-free source
+for this basin.
 
 | Class | Server | Dataset | Fetched by |
 |---|---|---|---|
@@ -295,8 +295,9 @@ credential-free source for this basin.
 | **CTD casts** | NOAA OSMC ERDDAP · `osmc.noaa.gov` | `cchdo_ctd` (CCHDO / GO-SHIP) | `tools/fetch_instruments.py` |
 | **Moorings** | NOAA OSMC ERDDAP | `OSMCV4_DUO_PROFILES`, filtered to moored buoys | `tools/fetch_instruments.py` |
 | **Model field** (T, S) | INCOIS ERDDAP · `erddap.incois.gov.in` | `incois_argo_10d_VAM` | `tools/fetch_model.py` |
+| **Currents** (u, v) | Copernicus Marine · `data.marine.copernicus.eu` | `GLOBAL_MULTIYEAR_PHY_001_030` (GLORYS12V1) | `tools/fetch_currents.py` |
 | **Cyclone best track** | NOAA NCEI · `ncei.noaa.gov` | IBTrACS v04r01 (`last3years`) | `tools/fetch_cyclone.py` |
-| Currents, chlorophyll fields | — | — | still generated |
+| Chlorophyll field | — | — | still generated |
 
 The cyclone row is a **separate snapshot** on a separate window — May 2023, not
 the live one — because the 2026 North Indian season has produced no storms at
@@ -305,6 +306,33 @@ all. See [Case study: Cyclone Mocha](#-case-study-cyclone-mocha-may-2023).
 Validation for the derived layers comes from a seventh dataset,
 `incois_valueadded_products_datasets` on the same INCOIS server — see
 [D26](#d26).
+
+### The four SIH-released links, and what each one actually is
+
+SIH published four dataset links for this problem statement. None of them is
+skipped, but two of them turn out to already be the servers above under a
+different name, which is worth stating plainly rather than silently:
+
+| Link | What it is | Status |
+|---|---|---|
+| [`las.incois.gov.in`](https://las.incois.gov.in/) | INCOIS's Live Access Server — a PyFerret/THREDDS front end. Its default dataset, "Corrected INCOIS BIO ROMS," carries **real** SST, SSS, MLD and — notably — chlorophyll, DIC, nitrate and pCO₂ for the full tropical Indian Ocean basin, monthly, 1980–2019. | **Documented, not fetched.** See below — its own advertised OPeNDAP URL does not work. |
+| [`data.marine.copernicus.eu/.../GLOBAL_MULTIYEAR_PHY_001_030`](https://data.marine.copernicus.eu/product/GLOBAL_MULTIYEAR_PHY_001_030/description) | GLORYS12V1 — the CMEMS global eddy-resolving reanalysis, 1/12°, 50 levels, daily, 1993–present. Carries `uo`/`vo` (eastward/northward current velocity). | **Wired in.** This is the currents row above — see [Real current vectors](#-real-current-vectors). |
+| [`ftp://ftp.ifremer.fr/ifremer/argo`](ftp://ftp.ifremer.fr/ifremer/argo) | The Argo GDAC itself — the raw per-float NetCDF archive. | **Already the upstream of the Argo row.** `erddap.ifremer.fr`'s `ArgoFloats` dataset is Ifremer's own tabular index *over this exact archive*; `tools/fetch_argo.py` reaches the same profiles ERDDAP rather than walking the FTP tree and parsing NetCDF file-by-file, which is the practical way to QC-filter and subset by lon/lat/date server-side instead of downloading the whole DAC. |
+| [`ftp://ftp.ifremer.fr/ifremer/glider/v2/`](ftp://ftp.ifremer.fr/ifremer/glider/v2/) | The OceanGliders GDAC v2 archive — the raw per-deployment glider NetCDF files. | **Already the upstream of the Gliders row**, for the same reason: `OceanGlidersGDACTrajectories` on `erddap.ifremer.fr` is Ifremer's own index over this v2 archive. |
+
+**Why LAS is documented rather than fetched.** Its UI is scriptable — clicking
+"Save As" fires a plain, credential-free `GET
+https://las.incois.gov.in/las/ProductServer.do?xml=<url-encoded lasRequest
+XML>`, the same shape `tools/fetch_model.py` already relies on for other
+INCOIS services — so this is not a CORS or auth problem. The blocker is that
+the operation this project would need (a numeric/NetCDF export rather than a
+plot) has an operation ID this session could not pin down in the time
+budgeted, and the URL the server itself advertises as *"See the URLs to
+access these data via OPeNDAP"*
+(`las.incois.gov.in/thredds/id-d272905813/data_home_las_datasets_pCO2_pCO2-Corrected_INCOIS-BIO-ROMS.nc.jnl`)
+is a PyFerret journal script, not a working DAP dataset — verified by fetching
+it directly, not assumed. A LAS chlorophyll fetcher is a plausible next step
+for whoever picks this up; the API shape above is the starting point.
 
 ### Coverage of the bundled snapshot
 
@@ -539,6 +567,63 @@ adjusted or raw fields were used, level count and maximum pressure. A float's
 reported position is where it **surfaced**, not where it profiled — it drifts
 during ascent — so trajectories draw the surfacings as the dominant element and
 the connecting line only as an indicative link.
+
+---
+
+## 🌊 Real current vectors
+
+`js/data/currents.json` holds real eastward/northward current velocity from
+Copernicus Marine's `GLOBAL_MULTIYEAR_PHY_001_030` (GLORYS12V1), fetched by
+`tools/fetch_currents.py` and committed the same way `argo.json` and
+`model.json` are — the app needs no network at runtime, and none of these
+hosts send `Access-Control-Allow-Origin` regardless.
+
+> Generated using E.U. Copernicus Marine Service Information;
+> <https://doi.org/10.48670/moi-00021>
+
+### Why it is a second document, not a `model.json` variable
+
+`js/dataService.js`'s field cropper (`_realModelField`) assumes one shared
+lon/lat/depth/time axis per document — it has no notion of a variable
+carrying its own grid, and folding currents into `model.json` directly would
+make one dataset's numbers cite another's source. So `fetch_currents.py`
+resamples GLORYS's native 1/12° grid (nearest neighbour, in both space and
+time) onto `model.json`'s exact 41×36×24 axes and 8 dates, and writes those
+identical axes into `currents.json`. `dataService.js` just picks the second
+document instead of the first when the requested variable is `currents`; nothing
+about cropping, caching or the depth/date controls needed to change.
+
+### Setup — this one needs an account
+
+Unlike every other source in this app, Copernicus Marine requires a **free**
+account. This project does not, and will not, hold or enter that credential
+for you:
+
+1. Register at <https://data.marine.copernicus.eu>.
+2. In a terminal you control, run `pip install copernicusmarine`, then
+   `copernicusmarine login`. It prompts for username/password interactively
+   and caches them locally (or set `COPERNICUSMARINE_SERVICE_USERNAME` /
+   `COPERNICUSMARINE_SERVICE_PASSWORD` yourself). Never paste a password into
+   an agent, a script, or this repo.
+3. `python tools/fetch_model.py` first if `js/data/model.json` is not already
+   present — currents is resampled onto its axes.
+4. `python tools/fetch_currents.py`, then `python tools/fetch_currents.py --check`.
+
+### What the fetch script enforces
+
+| Rule | Why |
+|---|---|
+| Resampled onto `model.json`'s exact axes, nearest neighbour | The renderer's field cropper has one shared grid per document; see above |
+| A day's tolerance on the time match, not open-ended `nearest` | Plain `xarray` nearest-match never fails — it would silently hand a request three months in the future the latest day GLORYS has, mislabelled |
+| Frames after GLORYS's own latest day come out **null** | GLORYS is a reanalysis and runs behind the live INCOIS ten-day analysis; a null frame falls back to the existing "nearest available frame, offset stated" machinery every other field already uses, rather than inventing one |
+| Speed (`√(u²+v²)`) range-checked 0–5 m/s, components ±20 m/s | The fastest boundary jets in this basin run under 2 m/s; anything past 5 is a pipeline defect, not a current |
+| Rounded to 4 decimals (~0.1 mm/s) | Past GLORYS's own noise floor, not into it |
+
+### What's still synthetic here
+
+The glyphs' **sqrt-length scaling**, decimation, and `InstancedMesh` batching
+(below) are unchanged — they read whatever `velocityU`/`velocityV` the active
+field carries, real or synthetic, and always did.
 
 ---
 
@@ -780,6 +865,11 @@ The problem statement asks for current **vectors**. Particles convey flow
 pattern but not magnitude, so they are paired with glyphs that carry both:
 direction from the u/v components, magnitude from length and colour on the same
 `speed` colormap the field uses, so a glyph can be read against the colorbar.
+
+The u/v components themselves are real — Copernicus Marine GLORYS12V1, see
+[Real current vectors](#-real-current-vectors) — but nothing below changed to
+make that true; the glyphs always read whatever `velocityU`/`velocityV` the
+active field carries.
 
 - **Decimated** to ~18 glyphs across. One per grid cell becomes noise long
   before it becomes information.
@@ -1810,6 +1900,7 @@ data that was stale, unadjusted, or quality-flagged.
 **Data**
 - [x] Real Argo GDAC profiles with QC (16 floats, 456 profiles, stratified by data centre)
 - [x] Real BGC chlorophyll from adjusted fields (16 floats, 343 profiles)
+- [ ] Real current vectors from Copernicus Marine GLORYS12V1 — script written (`tools/fetch_currents.py`), needs a Copernicus Marine account to run
 - [ ] Real NetCDF/OPeNDAP model fields — blocks everything in the hazard section
 - [ ] Glider feed (data exists, no temporal overlap and no QC flags; see above)
 - [ ] RAMA mooring feed (sites in domain; PMEL redirects to an unreachable mirror)

@@ -82,6 +82,26 @@ const _modelReady = fetch('./js/data/model.json')
   });
 
 // ---------------------------------------------------------------------------
+// Real current vectors
+// ---------------------------------------------------------------------------
+// js/data/currents.json, from tools/fetch_currents.py — Copernicus Marine
+// GLOBAL_MULTIYEAR_PHY_001_030 (GLORYS12V1), resampled onto model.json's exact
+// lons/lats/depths/times so it is a drop-in second document for the same
+// cropper rather than a field with its own grid. A separate document, and a
+// separate provenance record below, because it comes from a different
+// institution on a different day than the INCOIS temperature/salinity grid —
+// folding it into _modelDoc would have this field's numbers cite that one's
+// source.
+let _currentsDoc = null;
+const _currentsReady = fetch('./js/data/currents.json')
+  .then(r => r.ok ? r.json() : Promise.reject(new Error(`currents.json ${r.status}`)))
+  .then(d => { _currentsDoc = d; return d; })
+  .catch(err => {
+    console.warn('[INCOIS] Real current field unavailable, falling back to synthetic:', err.message);
+    return null;
+  });
+
+// ---------------------------------------------------------------------------
 // Real glider, CTD and mooring observations
 // ---------------------------------------------------------------------------
 // js/data/instruments.json, from tools/fetch_instruments.py. Three sources on
@@ -287,7 +307,7 @@ const _fieldCache = new Map();
 
 /** Provenance for the UI: what is real, what is synthetic. */
 export async function getDataProvenance() {
-  await Promise.all([_argoReady, _modelReady, _instReady]);
+  await Promise.all([_argoReady, _modelReady, _instReady, _currentsReady]);
   return {
     argo: _argoDoc
       ? { real: true, source: _argoDoc.source, generated: _argoDoc.generated,
@@ -330,9 +350,23 @@ export async function getDataProvenance() {
           // Named individually: 'the model field is real' is only true of the
           // two variables the product actually carries.
           realVariables: Object.keys(_modelDoc.variables),
+          // Currents gets its own provenance record below — a different
+          // institution, a different day — so it never appears here even when
+          // synthetic, or 'still synthetic: currents' would sit next to a
+          // model.source string that is not where currents comes from.
           syntheticVariables: Object.keys(VARIABLE_META)
+            .filter(v => v !== 'currents')
             .filter(v => !(v in _modelDoc.variables)) }
       : { real: false, note: 'Synthetic field with physically plausible structure' },
+    currents: _currentsDoc
+      ? { real: true, source: _currentsDoc.source, generated: _currentsDoc.generated,
+          dataset: Object.values(_currentsDoc.variables)[0]?.dataset,
+          attribution: _currentsDoc.attribution,
+          grid: _currentsDoc.grid, levels: _currentsDoc.depths.length,
+          depthRange: [_currentsDoc.depths[0], _currentsDoc.depths[_currentsDoc.depths.length - 1]],
+          frames: _currentsDoc.times.length,
+          timeRange: [_currentsDoc.times[0], _currentsDoc.times[_currentsDoc.times.length - 1]] }
+      : { real: false },
     instruments: _instDoc
       ? Object.fromEntries(Object.entries(INSTRUMENTS).map(([type, spec]) => {
           const groups = _instDoc[spec.group] || [];
@@ -354,11 +388,12 @@ export async function getDataProvenance() {
 
 /** Await before any call that may need real Argo data. */
 export function whenDataReady() {
-  return Promise.all([_argoReady, _modelReady, _instReady]);
+  return Promise.all([_argoReady, _modelReady, _instReady, _currentsReady]);
 }
 
-/** True when this variable is served from the real INCOIS grid. */
+/** True when this variable is served from a real grid (INCOIS, or Copernicus for currents). */
 export function isModelVariableReal(variable) {
+  if (variable === 'currents') return !!_currentsDoc;
   return !!_modelDoc?.variables?.[variable];
 }
 
@@ -374,10 +409,11 @@ export function getModelFrames() {
  * continuous slider over depths nothing was ever computed at.
  */
 export function getModelLevels(variable) {
+  if (variable === 'currents') return _currentsDoc ? _currentsDoc.depths.slice() : null;
   if (!_modelDoc) return null;
-  // Currents and chlorophyll fall through to the synthetic generator and its
-  // even ladder, so answering with the INCOIS levels for them would have the
-  // depth control label a sheet with a depth it is not drawn at.
+  // Chlorophyll falls through to the synthetic generator and its even
+  // ladder, so answering with the INCOIS levels for it would have the depth
+  // control label a sheet with a depth it is not drawn at.
   if (variable && !_modelDoc.variables[variable]) return null;
   return _modelDoc.depths.slice();
 }
@@ -451,7 +487,10 @@ export async function getModelField(variable, date, timestep) {
  * co-location between the field and the floats drawn on top of it.
  */
 function _realModelField(variable, date, timestep) {
-  const doc = _modelDoc;
+  // Currents live in a separate document (see _currentsDoc above) built on
+  // the identical lons/lats/depths/times axes, so every line below this
+  // reads generically off `doc` and needs no branch of its own.
+  const doc = variable === 'currents' ? _currentsDoc : _modelDoc;
   const v = doc?.variables?.[variable];
   if (!v) return null;
 
@@ -484,20 +523,9 @@ function _realModelField(variable, date, timestep) {
   const [ix0, ix1] = _cropAxis(doc.lons, VIEW.lonMin, VIEW.lonMax);
   const [iy0, iy1] = _cropAxis(doc.lats, VIEW.latMin, VIEW.latMax);
   const nx = ix1 - ix0 + 1, ny = iy1 - iy0 + 1, nz = doc.depths.length;
-  const src = v.frames[fi];
   const sw = doc.grid.nx, sh = doc.grid.ny;
 
-  const values = new Float32Array(nx * ny * nz);
-  for (let iz = 0; iz < nz; iz++) {
-    for (let iy = 0; iy < ny; iy++) {
-      for (let ix = 0; ix < nx; ix++) {
-        const s = src[iz * sh * sw + (iy0 + iy) * sw + (ix0 + ix)];
-        // null is land or water the analysis did not resolve. It becomes NaN
-        // and stays a hole all the way to the pixel; see generateHeatmapTexture.
-        values[iz * ny * nx + iy * nx + ix] = s === null ? NaN : s;
-      }
-    }
-  }
+  const values = _cropFrame(v.frames[fi], sw, sh, ix0, iy0, nx, ny, nz);
 
   const dLon = doc.lons[1] - doc.lons[0];
   const dLat = doc.lats[1] - doc.lats[0];
@@ -528,6 +556,13 @@ function _realModelField(variable, date, timestep) {
     depths: doc.depths,
     values,
   };
+  // Current vectors carry components alongside the speed scalar in `values`;
+  // scene.js's glyphs read these two and skip drawing when either is absent,
+  // which is also how they stay off every other variable's field for free.
+  if (variable === 'currents' && v.uFrames?.[fi] && v.vFrames?.[fi]) {
+    field.velocityU = _cropFrame(v.uFrames[fi], sw, sh, ix0, iy0, nx, ny, nz);
+    field.velocityV = _cropFrame(v.vFrames[fi], sw, sh, ix0, iy0, nx, ny, nz);
+  }
   _fieldCache.set(key, field);
   return { ...field, date, timestep, offsetMs: Date.parse(doc.times[fi]) - wanted };
 }
@@ -550,6 +585,26 @@ function _cropAxis(centres, lo, hi) {
     if (i0 > 0) i0--; else i1 = Math.min(i0 + 1, centres.length - 1);
   }
   return [i0, i1];
+}
+
+/**
+ * Crop one flat (iz*sh*sw + iy*sw + ix)-ordered frame to a lon/lat window,
+ * re-indexed to (iz*ny*nx + iy*nx + ix). Shared by `values` and, for
+ * currents, `velocityU`/`velocityV` — three identical loops collapsed to one.
+ */
+function _cropFrame(src, sw, sh, ix0, iy0, nx, ny, nz) {
+  const out = new Float32Array(nx * ny * nz);
+  for (let iz = 0; iz < nz; iz++) {
+    for (let iy = 0; iy < ny; iy++) {
+      for (let ix = 0; ix < nx; ix++) {
+        const s = src[iz * sh * sw + (iy0 + iy) * sw + (ix0 + ix)];
+        // null is land or water the analysis did not resolve. It becomes NaN
+        // and stays a hole all the way to the pixel; see generateHeatmapTexture.
+        out[iz * ny * nx + iy * nx + ix] = s === null ? NaN : s;
+      }
+    }
+  }
+  return out;
 }
 
 /**

@@ -243,9 +243,12 @@ function _wireControls() {
   // 30, 50, 75, 100 ... 1800 m — so the readout, the exported provenance strip
   // and the sheet on screen all name the same depth. A free slider let the
   // label claim 340 m while the nearest computed level was 300.
-  // Read per event, not once at wiring: currents and chlorophyll have no real
-  // counterpart and render on the synthetic even ladder, so snapping those to
-  // the INCOIS levels would label the sheet with a depth it is not at.
+  // Read per event, not once at wiring: chlorophyll has no real counterpart
+  // and renders on the synthetic even ladder, so snapping it to the INCOIS
+  // levels would label the sheet with a depth it is not at. Currents now has
+  // its own real levels (getModelLevels branches on the variable), which are
+  // not the INCOIS ones either — GLORYS is resampled onto them, see
+  // tools/fetch_currents.py.
   const snap = v => {
     const levels = getModelLevels(State.get('activeVariable'));
     return levels ? levels.reduce((a, b) => Math.abs(b - v) < Math.abs(a - v) ? b : a) : v;
@@ -528,11 +531,15 @@ async function _exportPNG() {
 
   // The honesty line: which half of what you are looking at is measured.
   // Stated for the variable actually exported — temperature and salinity come
-  // from the INCOIS grid, currents and chlorophyll are still generated, and one
-  // sentence covering both would be false about one of them.
+  // from the INCOIS grid, currents from Copernicus Marine, chlorophyll is
+  // still generated, and one sentence covering all of them would be false
+  // about at least one.
   c.font = "11px 'IBM Plex Mono', monospace";
   const variable = State.get('activeVariable');
-  const fieldReal = prov.model.real && prov.model.realVariables.includes(variable);
+  const fieldProv = variable === 'currents' ? prov.currents : prov.model;
+  const fieldReal = variable === 'currents'
+    ? !!prov.currents.real
+    : prov.model.real && prov.model.realVariables.includes(variable);
   const cen = prov.argo.census;
   // The frame contains four observation classes, not one. Attributing all of
   // them to "Argo GDAC" was wrong even on the healthy path — gliders come from
@@ -553,7 +560,7 @@ async function _exportPNG() {
         : `${k} SYNTHETIC`).join(', ')
     : 'gliders/CTD/moorings SYNTHETIC';
   const field = fieldReal
-    ? `Field: real (${prov.model.dataset}, ${prov.model.levels} levels to ${prov.model.depthRange[1]} m)`
+    ? `Field: real (${fieldProv.dataset}, ${fieldProv.levels} levels to ${fieldProv.depthRange[1]} m)`
     : 'Field: SYNTHETIC';
   // Green only when nothing in the frame is generated — which now includes the
   // instrument markers, not just the floats and the field.
@@ -998,9 +1005,9 @@ function _wireAreaSelection() {
  * Say which data is real and which is synthetic, permanently and in the chrome.
  *
  * Both halves are now stated from the provenance record rather than asserted in
- * a literal: the model field became real for temperature and salinity but
- * stayed synthetic for currents and chlorophyll, and a badge that generalises
- * either way would be wrong about half the app.
+ * a literal: the model field became real for temperature, salinity and
+ * currents but stayed synthetic for chlorophyll, and a badge that generalises
+ * either way would be wrong about part of the app.
  */
 async function _renderProvenanceBadge() {
   const el = document.getElementById('provenance-badge');
@@ -1023,8 +1030,10 @@ async function _renderProvenanceBadge() {
       `QC: kept flags ${p.argo.qc.keptFlags.join(', ')}\n` +
       _censusLines(p.argo) +
       _modelProvenanceLines(p.model) +
+      _currentsProvenanceLines(p.currents) +
       `\n${p.argo.attribution}` +
-      (p.model.real ? `\n\n${p.model.attribution}` : '');
+      (p.model.real ? `\n\n${p.model.attribution}` : '') +
+      (p.currents.real ? `\n\n${p.currents.attribution}` : '');
   } else {
     el.textContent = 'SYNTHETIC DATA';
     el.title = 'Real Argo data could not be loaded; showing synthetic floats.';
@@ -1078,6 +1087,15 @@ function _modelProvenanceLines(m) {
     `  ${m.frames} frames, ${m.timeRange[0].slice(0, 10)} to ${m.timeRange[1].slice(0, 10)}\n` +
     (m.syntheticVariables.length
       ? `  still synthetic: ${m.syntheticVariables.join(', ')}\n` : '');
+}
+
+/** The currents half of the provenance tooltip — a separate source, so a separate block. */
+function _currentsProvenanceLines(c) {
+  if (!c?.real) return 'Currents: synthetic\n';
+  const g = c.grid;
+  return `Currents: real — ${c.source}\n` +
+    `  grid ${g.nx}×${g.ny}×${c.levels} levels, ${c.depthRange[0]}–${c.depthRange[1]} m\n` +
+    `  ${c.frames} frames, ${c.timeRange[0].slice(0, 10)} to ${c.timeRange[1].slice(0, 10)}\n`;
 }
 
 /**
