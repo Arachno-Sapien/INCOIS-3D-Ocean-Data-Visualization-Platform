@@ -1,4 +1,4 @@
-# 🌊 INCOIS 3D Ocean Data Visualization Platform
+# INCOIS 3D Ocean Data Visualization Platform
 
 <div align="center">
 
@@ -16,51 +16,52 @@
 
 ---
 
-## 📸 Overview
+## Overview
 
 The app opens on an **overview globe** where you pick the model domain or an
 instrument, then flies into a depth-resolved volume of the **northern Indian
 Ocean (55°E–95°E, 10°S–25°N, 0–2000 m)** carrying:
 
-- **Ocean model fields** — temperature, salinity, currents, chlorophyll — as sea
+- **Ocean model fields**: temperature, salinity, currents and chlorophyll, as sea
   surface, depth-slice and vertical cross-section planes through the water column
-- **Isosurfaces** — the depth of any threshold as a shaded relief, with **D26**
+- **Isosurfaces**: the depth of any threshold as a shaded relief, with **D26**
   (26 °C isotherm) as a preset
-- **Derived cyclone heat (TCHP)** — computed from the temperature volume
-- **Current vector glyphs** — direction and magnitude, with a stated reference
-- **Argo floats** — real WMO-numbered floats with QC'd temperature and salinity
+- **Derived cyclone heat (TCHP)**: computed from the temperature volume
+- **Current vector glyphs**: direction and magnitude, with a stated reference
+- **Argo floats**: real WMO-numbered floats with QC'd temperature and salinity
   profiles, and surfacing trajectories
-- **BGC floats** — real adjusted chlorophyll profiles
-- **Gliders** — real dives from the OceanGliders GDAC, one profile per descent
-- **CTD casts** — real GO-SHIP ship casts, grouped by cruise
-- **Moorings** — real Indian OMNI buoy profiles, three-hourly and current
+- **BGC floats**: real adjusted chlorophyll profiles
+- **Gliders**: real dives from the OceanGliders GDAC, one profile per descent
+- **CTD casts**: real GO-SHIP ship casts, grouped by cruise
+- **Moorings**: real Indian OMNI buoy profiles, three-hourly and current
 
 Click any instrument for a depth profile beside the model field it sits in.
 
-> **The observations and the temperature/salinity field are both real.**
-> 16 core Argo floats (456 QC'd T/S profiles) and 16 BGC floats (323
-> chlorophyll profiles) from the Argo Global Data Assembly Centre — drawn from
-> the 222 floats that reported in this basin over the window, 101 of them
-> INCOIS-managed — over a
-> gridded temperature and salinity field from INCOIS's own ERDDAP — the
-> `incois_argo_10d_VAM` variational analysis, 1°, 24 levels from 5 m to
-> 2000 m, ten-daily. Gliders, CTD casts and moorings are real too, from three
-> further servers. Only the **currents and chlorophyll fields** are still
-> generated, and the UI says so per variable rather than per app.
+> **The observations, the temperature/salinity field and the current field are
+> all real.** 16 core Argo floats (456 QC'd T/S profiles) and 16 BGC floats
+> (323 chlorophyll profiles) from the Argo Global Data Assembly Centre, drawn
+> from the 222 floats that reported in this basin over the window, 101 of
+> them INCOIS-managed, over a gridded temperature and salinity field from
+> INCOIS's own ERDDAP: the `incois_argo_10d_VAM` variational analysis, 1°,
+> 24 levels from 5 m to 2000 m, ten-daily, plus real eastward/northward
+> current velocity from Copernicus Marine's GLORYS12V1 reanalysis. Gliders,
+> CTD casts and moorings are real too, from three further servers. Only the
+> **chlorophyll field** is still generated, and the UI says so per variable
+> rather than per app.
 
 The service layer (`dataService.js`) is a strict seam: swapping the remaining
 synthetic sources for a real backend means editing **only that one file**.
-The model field already proves it — it replaced a generator without the
+The model field already proves it: it replaced a generator without the
 renderer learning anything new about where data comes from.
 
 ---
 
-## 🗂️ Project Structure
+## Project Structure
 
 ```
 SIH2026/
 │
-├── index.html              ← Single HTML shell — layout, all CSS, importmap
+├── index.html              ← Single HTML shell: layout, all CSS, importmap
 ├── serve.py                ← Dev server (stdlib only, sends no-store)
 │
 ├── assets/
@@ -70,6 +71,7 @@ SIH2026/
 │   │                         any of them to refresh that snapshot.
 │   ├── fetch_argo.py       ← Argo + BGC profiles, QC'd, with a basin census
 │   ├── fetch_model.py      ← INCOIS gridded T/S  (--check, --validate-d26)
+│   ├── fetch_currents.py   ← Copernicus Marine current vectors  (--check)
 │   ├── fetch_instruments.py ← Gliders, CTD casts, moorings  (--check)
 │   └── fetch_cyclone.py    ← Cyclone Mocha case study, separate window (--check)
 │
@@ -87,14 +89,15 @@ SIH2026/
     └── data/
         ├── argo.json       ← Argo + BGC observations, QC'd (1.8 MB)
         ├── model.json      ← INCOIS gridded T/S, 8 frames × 24 levels (3.2 MB)
+        ├── currents.json   ← Copernicus Marine u/v, 6 of 8 frames real (4.3 MB)
         ├── instruments.json ← Glider dives, CTD casts, mooring profiles (0.9 MB)
         └── cyclone.json    ← Mocha 2023: track, field, floats, analysis (1.3 MB)
 ```
 
 > **No `node_modules`, no `package.json`, no build step.** Three.js, fonts and
-> icons load from CDN via ES module importmap. Everything else — coastlines,
-> observations, the gridded field, the logo — is bundled, so the app renders
-> with no network call. A venue with bad wifi cannot break the demo.
+> icons load from CDN via ES module importmap. Everything else, including
+> coastlines, observations, the gridded field and the logo, is bundled, so the
+> app renders with no network call. A venue with bad wifi cannot break the demo.
 >
 > The snapshots are committed for a second reason too: **none of the source
 > servers send an `Access-Control-Allow-Origin` header**, so a browser cannot
@@ -104,7 +107,7 @@ SIH2026/
 
 ---
 
-## 🚀 Running Locally
+## Running Locally
 
 ### Prerequisites
 - A modern browser: **Chrome 89+**, **Firefox 108+**, or **Edge 89+** (WebGL2 + importmap support)
@@ -140,7 +143,7 @@ python -m http.server 8765     # then Ctrl+Shift+R on each change
 In Claude Code, `.claude/launch.json` registers this as the `ocean3d` config,
 so the preview starts without anyone picking a port.
 
-> ⚠️ **Must use HTTP** — ES modules are blocked by browsers when opened directly via `file://` protocol due to CORS restrictions.
+> **Must use HTTP.** ES modules are blocked by browsers when opened directly via `file://` protocol due to CORS restrictions.
 
 ### GitHub Pages (No Server Needed)
 
@@ -148,17 +151,17 @@ Enable free hosting directly from the repo:
 1. Go to **Settings → Pages**
 2. Source: **Deploy from a branch**
 3. Branch: `main` → `/ (root)`
-4. Save — your site will be live at `https://siddharthr21.github.io/Ocean_Data_Visualization/`
+4. Save. Your site will be live at `https://siddharthr21.github.io/Ocean_Data_Visualization/`
 
 ---
 
-## 🧱 Tech Stack
+## Tech Stack
 
 | Layer | Technology | Why |
 |---|---|---|
 | 3D Rendering | [Three.js v0.160.0](https://threejs.org/) | WebGL abstraction, geometry, materials, animation |
 | Camera Controls | Three.js OrbitControls | Orbit/pan/zoom navigation |
-| 2D Charts | Canvas 2D API | Depth-profile line chart, colorbar, sonar gauge — zero external deps |
+| 2D Charts | Canvas 2D API | Depth-profile line chart, colorbar, sonar gauge, zero external deps |
 | Module Loading | ES Modules + Importmap | Native browser modules, no bundler |
 | Styling | Vanilla CSS3 | Custom properties, layered surfaces, `backdrop-filter` |
 | Fonts | Google Fonts CDN | Outfit (display), Geist (UI), IBM Plex Mono (all numerics) |
@@ -171,7 +174,7 @@ Enable free hosting directly from the repo:
 
 ---
 
-## 🎨 Visual Design
+## Visual Design
 
 ### Bathymetric surface ramp
 
@@ -192,7 +195,7 @@ water column. No pure black anywhere.
 |---|---|---|
 | `--lumen` | `#63e6be` | every interactive affordance, focus ring, active state, gauge |
 
-Bioluminescent seafoam, chosen deliberately **instead of `#22d3ee`** — that exact
+Bioluminescent seafoam, chosen deliberately **instead of `#22d3ee`**: that exact
 cyan is the default dark-tech accent and reads as generic. One accent, locked
 across the whole interface.
 
@@ -249,39 +252,39 @@ needle sweeping to the current depth slice, and a numeric readout. The label sit
 The top bar carries the official INCOIS seal (`assets/incois-logo.png`), sourced
 from incois.gov.in and downscaled from 14584×14584 / 5.5 MB to 96 px / 18 KB. It
 is bundled rather than hotlinked so it cannot fail on a poor connection, and it
-sits on the bar with no plate behind it — the mark carries its own light circular
+sits on the bar with no plate behind it: the mark carries its own light circular
 field, which the accent gradient previously fought.
 
 ---
 
-## 🖥️ UI Layout
+## UI Layout
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  TOP BAR: Brand | Temperature | Salinity | Currents | Chl | Argo│
-├────────────┬────────────────────────────────────┬───────────────┤
-│  CONTROLS  │                                    │    LAYERS     │
-│  PANEL     │      THREE.JS 3D OCEAN SCENE       │    PANEL      │
-│  (Left)    │         (Full viewport)            │    (Right)    │
-│            │                                    │               │
-│  Date      │   ┌─ Lon/Lat/Depth axes ──────┐   │  ☑ Sea surface│
-│  Timestep  │   │  Heatmap planes           │   │  ☑ Lon section│
-│  Depth ──  │   │  Current particles ·····  │   │  ☑ Lat section│
-│  V.Exag ── │   │  Argo ● Glider ◆ CTD ●   │   │  ☑ Depth slice│
-│  Opacity──  │   └───────────────────────────┘   │  ☑ Currents  │
-│            │                                    │  ☑ Argo      │
-│  Palette   │                       [Profile     │  ☑ Gliders   │
-│  Min / Max │                        Panel       │  ☑ CTD       │
-│  Lin / Log │                        on click]   │  ☑ Bathymetry│
-├────────────┴────────────────────────────────────┴───────────────┤
-│  [●DEPTH GAUGE]   [▶] [1×]  |00:00|  |06:00|  |12:00|  |18:00| │
-│  (sonar dial)     Timeline scrubber with tick marks             │
-└─────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────┐
+│  TOP BAR: Brand | Temperature | Salinity | Currents | Chl | Argo   │
+├────────────┬──────────────────────────────────────┬───────────────┤
+│  CONTROLS  │                                      │    LAYERS     │
+│  PANEL     │      THREE.JS 3D OCEAN SCENE         │    PANEL      │
+│  (Left)    │         (Full viewport)              │    (Right)    │
+│            │                                      │               │
+│  Date      │   ┌─ Lon/Lat/Depth axes ────────┐    │  [x] Sea surface │
+│  Timestep  │   │  Heatmap planes             │    │  [x] Lon section │
+│  Depth     │   │  Current particles ·····    │    │  [x] Lat section │
+│  V.Exag    │   │  Argo ● Glider ◆ CTD ●      │    │  [x] Depth slice │
+│  Opacity   │   └──────────────────────────────┘    │  [x] Currents    │
+│            │                                      │  [x] Argo        │
+│  Palette   │                       [Profile       │  [x] Gliders     │
+│  Min / Max │                        Panel         │  [x] CTD         │
+│  Lin / Log │                        on click]     │  [x] Bathymetry  │
+├────────────┴──────────────────────────────────────┴───────────────┤
+│  [●DEPTH GAUGE]    [▶] [1×]  |00:00| |06:00| |12:00| |18:00|      │
+│  (sonar dial)      Timeline scrubber with tick marks               │
+└───────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 📊 Where every layer's data comes from
+## Where every layer's data comes from
 
 Seven data classes, six servers, five fetch scripts. Nothing in the app is
 generated except the chlorophyll field, which has no credential-free source
@@ -299,12 +302,12 @@ for this basin.
 | **Cyclone best track** | NOAA NCEI · `ncei.noaa.gov` | IBTrACS v04r01 (`last3years`) | `tools/fetch_cyclone.py` |
 | Chlorophyll field | — | — | still generated |
 
-The cyclone row is a **separate snapshot** on a separate window — May 2023, not
-the live one — because the 2026 North Indian season has produced no storms at
+The cyclone row is a **separate snapshot** on a separate window, May 2023, not
+the live one, because the 2026 North Indian season has produced no storms at
 all. See [Case study: Cyclone Mocha](#-case-study-cyclone-mocha-may-2023).
 
 Validation for the derived layers comes from a seventh dataset,
-`incois_valueadded_products_datasets` on the same INCOIS server — see
+`incois_valueadded_products_datasets` on the same INCOIS server. See
 [D26](#d26).
 
 ### The four SIH-released links, and what each one actually is
@@ -315,22 +318,22 @@ different name, which is worth stating plainly rather than silently:
 
 | Link | What it is | Status |
 |---|---|---|
-| [`las.incois.gov.in`](https://las.incois.gov.in/) | INCOIS's Live Access Server — a PyFerret/THREDDS front end. Its default dataset, "Corrected INCOIS BIO ROMS," carries **real** SST, SSS, MLD and — notably — chlorophyll, DIC, nitrate and pCO₂ for the full tropical Indian Ocean basin, monthly, 1980–2019. | **Documented, not fetched.** See below — its own advertised OPeNDAP URL does not work. |
-| [`data.marine.copernicus.eu/.../GLOBAL_MULTIYEAR_PHY_001_030`](https://data.marine.copernicus.eu/product/GLOBAL_MULTIYEAR_PHY_001_030/description) | GLORYS12V1 — the CMEMS global eddy-resolving reanalysis, 1/12°, 50 levels, daily, 1993–present. Carries `uo`/`vo` (eastward/northward current velocity). | **Wired in.** This is the currents row above — see [Real current vectors](#-real-current-vectors). |
-| [`ftp://ftp.ifremer.fr/ifremer/argo`](ftp://ftp.ifremer.fr/ifremer/argo) | The Argo GDAC itself — the raw per-float NetCDF archive. | **Already the upstream of the Argo row.** `erddap.ifremer.fr`'s `ArgoFloats` dataset is Ifremer's own tabular index *over this exact archive*; `tools/fetch_argo.py` reaches the same profiles ERDDAP rather than walking the FTP tree and parsing NetCDF file-by-file, which is the practical way to QC-filter and subset by lon/lat/date server-side instead of downloading the whole DAC. |
-| [`ftp://ftp.ifremer.fr/ifremer/glider/v2/`](ftp://ftp.ifremer.fr/ifremer/glider/v2/) | The OceanGliders GDAC v2 archive — the raw per-deployment glider NetCDF files. | **Already the upstream of the Gliders row**, for the same reason: `OceanGlidersGDACTrajectories` on `erddap.ifremer.fr` is Ifremer's own index over this v2 archive. |
+| [`las.incois.gov.in`](https://las.incois.gov.in/) | INCOIS's Live Access Server, a PyFerret/THREDDS front end. Its default dataset, "Corrected INCOIS BIO ROMS," carries **real** SST, SSS, MLD and, notably, chlorophyll, DIC, nitrate and pCO₂ for the full tropical Indian Ocean basin, monthly, 1980–2019. | **Documented, not fetched.** See below: its own advertised OPeNDAP URL does not work. |
+| [`data.marine.copernicus.eu/.../GLOBAL_MULTIYEAR_PHY_001_030`](https://data.marine.copernicus.eu/product/GLOBAL_MULTIYEAR_PHY_001_030/description) | GLORYS12V1, the CMEMS global eddy-resolving reanalysis, 1/12°, 50 levels, daily, 1993–present. Carries `uo`/`vo` (eastward/northward current velocity). | **Wired in.** This is the currents row above. See [Real current vectors](#-real-current-vectors). |
+| [`ftp://ftp.ifremer.fr/ifremer/argo`](ftp://ftp.ifremer.fr/ifremer/argo) | The Argo GDAC itself: the raw per-float NetCDF archive. | **Already the upstream of the Argo row.** `erddap.ifremer.fr`'s `ArgoFloats` dataset is Ifremer's own tabular index *over this exact archive*; `tools/fetch_argo.py` reaches the same profiles ERDDAP rather than walking the FTP tree and parsing NetCDF file-by-file, which is the practical way to QC-filter and subset by lon/lat/date server-side instead of downloading the whole DAC. |
+| [`ftp://ftp.ifremer.fr/ifremer/glider/v2/`](ftp://ftp.ifremer.fr/ifremer/glider/v2/) | The OceanGliders GDAC v2 archive: the raw per-deployment glider NetCDF files. | **Already the upstream of the Gliders row**, for the same reason: `OceanGlidersGDACTrajectories` on `erddap.ifremer.fr` is Ifremer's own index over this v2 archive. |
 
-**Why LAS is documented rather than fetched.** Its UI is scriptable — clicking
+**Why LAS is documented rather than fetched.** Its UI is scriptable: clicking
 "Save As" fires a plain, credential-free `GET
 https://las.incois.gov.in/las/ProductServer.do?xml=<url-encoded lasRequest
 XML>`, the same shape `tools/fetch_model.py` already relies on for other
-INCOIS services — so this is not a CORS or auth problem. The blocker is that
+INCOIS services, so this is not a CORS or auth problem. The blocker is that
 the operation this project would need (a numeric/NetCDF export rather than a
 plot) has an operation ID this session could not pin down in the time
 budgeted, and the URL the server itself advertises as *"See the URLs to
 access these data via OPeNDAP"*
 (`las.incois.gov.in/thredds/id-d272905813/data_home_las_datasets_pCO2_pCO2-Corrected_INCOIS-BIO-ROMS.nc.jnl`)
-is a PyFerret journal script, not a working DAP dataset — verified by fetching
+is a PyFerret journal script, not a working DAP dataset, verified by fetching
 it directly, not assumed. A LAS chlorophyll fetcher is a plausible next step
 for whoever picks this up; the API shape above is the starting point.
 
@@ -370,13 +373,13 @@ python tools/fetch_cyclone.py --check     # the separate May 2023 snapshot
 This is a property of the ocean observing network, not a gap in the pipeline,
 and the app is built to say so rather than to hide it.
 
-- **Moorings are the freshest thing in the app** — 09:00 on the day of the
+- **Moorings are the freshest thing in the app**: 09:00 on the day of the
   snapshot, reporting every three hours.
 - **Argo and BGC** run to the previous evening.
 - **CTD casts are research cruises.** The newest GO-SHIP occupation of this
   basin was April 2025; there has not been one since.
 - **Gliders stopped in 2022.** Only seven deployments have *ever* entered this
-  domain — five in the Bay of Bengal around 8°N in mid-2016, two in the Gulf of
+  domain: five in the Bay of Bengal around 8°N in mid-2016, two in the Gulf of
   Oman in 2021–22. Nothing since 2022-10-14.
 - **The model field lags the observations by about a month.** INCOIS's analysis
   runs that far behind real time, which is why the app opens on the newest
@@ -391,7 +394,7 @@ classes from the app; each source takes the window it actually has.
 
 ---
 
-## 🛟 Real Argo data
+## Real Argo data
 
 `js/data/argo.json` holds genuine Argo GDAC observations, fetched and quality
 controlled by `tools/fetch_argo.py` and committed so the app needs no network at
@@ -436,7 +439,7 @@ in the ocean.
 ### Which floats, and whose
 
 `data_center` is requested alongside the measurements, so every profile carries
-the Data Assembly Centre that curated it — `IN` incois, `AO` aoml, `IF`
+the Data Assembly Centre that curated it: `IN` incois, `AO` aoml, `IF`
 coriolis, `HZ` csio, `BO` bodc, `CS` csiro, `ME` meds.
 
 Two different numbers are reported, and conflating them would misrepresent
@@ -448,7 +451,7 @@ Basin: 222 floats reported in this window, 101 INCOIS-managed (45%)
   shown: 16, sampled per data centre (IN 8, AO 5, IF 2, HZ 1)
 ```
 
-INCOIS operates just under half the floats in this basin — the largest single
+INCOIS operates just under half the floats in this basin, the largest single
 contributor, ahead of AOML's 66.
 
 The bundle used to be chosen purely by cycle count, on the reasoning that
@@ -463,11 +466,11 @@ seats. The tracks are still real trajectories; the mix now matches the ocean.
 Seats are allocated by highest averages (D'Hondt), one at a time, rather than
 by largest remainder followed by round-robin. The difference only shows when a
 centre runs out of floats: the round-robin gave its leftover seats to whoever
-had capacity, which on a thin pool handed MEDS — two floats in the whole basin —
+had capacity, which on a thin pool handed MEDS (two floats in the whole basin)
 eight of the sixteen seats.
 
 Chlorophyll comes from **`chla_adjusted`, never `chla`**. In this domain 100% of
-raw fluorescence levels carry QC flag 3 ("probably bad") — the sensor needs a
+raw fluorescence levels carry QC flag 3 ("probably bad"): the sensor needs a
 factor-of-2 scale correction and is depressed near the surface by
 non-photochemical quenching. Filtering raw on flags 1–2 yields **zero** usable
 levels; the delayed-mode adjusted field yields 14,639.
@@ -484,7 +487,7 @@ zone.
 
 Gliders, CTD casts and moorings are fetched by `tools/fetch_instruments.py`
 into `js/data/instruments.json`. Three sources, three servers, three schemas,
-reduced to the same platform/profile contract the floats already use — the
+reduced to the same platform/profile contract the floats already use, so the
 scene and the profile panel needed no knowledge of any of them.
 
 | Class | Source | In domain | Window |
@@ -507,7 +510,7 @@ Three findings worth recording, because each one cost a wrong turn:
 
 - **The obvious mooring dataset is the wrong one.** OSMC's
   `OSMCV4_DUO_TIME_SERIES` carries these same Indian buoys with
-  `observation_depth` of 0 and `ztmp` populated in 2 rows out of 7,602 — it is
+  `observation_depth` of 0 and `ztmp` populated in 2 rows out of 7,602: it is
   a surface feed. `OSMCV4_DUO_PROFILES` carries the same buoys with real
   nine-level temperature *and* salinity from 10 m to 500 m. Using the first
   would have made a profiling buoy look like a thermometer.
@@ -529,7 +532,7 @@ duplicate-level removal, and their profiles are chipped **Range-checked only**
 rather than being allowed to imply a quality-controlled profile nobody
 supplied.
 
-A glider deployment is a continuous trajectory, not a set of profiles — the
+A glider deployment is a continuous trajectory, not a set of profiles: the
 GDAC returns 47,416 samples for three days of one deployment. Each descent
 between two surfacings becomes one profile, which is the same object an Argo
 cycle is, so it flows through the existing contract untouched. A CTD cruise is
@@ -556,7 +559,7 @@ instant unless they do.
   scrubbing the date moves the observations instead of pinning one profile.
 - Every profile states its **offset from the model frame** (`2.7 d before model
   frame`), colour-graded: accent within 5 days, neutral within a month, warning
-  beyond a year. This applies to **synthetic platforms too** — a generated
+  beyond a year. This applies to **synthetic platforms too**: a generated
   instrument dated two years from the frame is exactly as misleading as a real
   one, and only real profiles carried the badge at first.
 - **Synthetic platforms are generated relative to the selected frame** rather
@@ -571,18 +574,18 @@ script with a different window moves them automatically.
 
 `WMO`, `CYCLE_NUMBER`, data mode (real-time / adjusted / delayed), whether
 adjusted or raw fields were used, level count and maximum pressure. A float's
-reported position is where it **surfaced**, not where it profiled — it drifts
-during ascent — so trajectories draw the surfacings as the dominant element and
+reported position is where it **surfaced**, not where it profiled: it drifts
+during ascent, so trajectories draw the surfacings as the dominant element and
 the connecting line only as an indicative link.
 
 ---
 
-## 🌊 Real current vectors
+## Real current vectors
 
 `js/data/currents.json` holds real eastward/northward current velocity from
 Copernicus Marine's `GLOBAL_MULTIYEAR_PHY_001_030` (GLORYS12V1), fetched by
 `tools/fetch_currents.py` and committed the same way `argo.json` and
-`model.json` are — the app needs no network at runtime, and none of these
+`model.json` are: the app needs no network at runtime, and none of these
 hosts send `Access-Control-Allow-Origin` regardless.
 
 > Generated using E.U. Copernicus Marine Service Information;
@@ -591,7 +594,7 @@ hosts send `Access-Control-Allow-Origin` regardless.
 ### Why it is a second document, not a `model.json` variable
 
 `js/dataService.js`'s field cropper (`_realModelField`) assumes one shared
-lon/lat/depth/time axis per document — it has no notion of a variable
+lon/lat/depth/time axis per document. It has no notion of a variable
 carrying its own grid, and folding currents into `model.json` directly would
 make one dataset's numbers cite another's source. So `fetch_currents.py`
 resamples GLORYS's native 1/12° grid (nearest neighbour, in both space and
@@ -600,7 +603,7 @@ identical axes into `currents.json`. `dataService.js` just picks the second
 document instead of the first when the requested variable is `currents`; nothing
 about cropping, caching or the depth/date controls needed to change.
 
-### Setup — this one needs an account
+### Setup: this one needs an account
 
 Unlike every other source in this app, Copernicus Marine requires a **free**
 account. This project does not, and will not, hold or enter that credential
@@ -613,7 +616,7 @@ for you:
    `COPERNICUSMARINE_SERVICE_PASSWORD` yourself). Never paste a password into
    an agent, a script, or this repo.
 3. `python tools/fetch_model.py` first if `js/data/model.json` is not already
-   present — currents is resampled onto its axes.
+   present: currents is resampled onto its axes.
 4. `python tools/fetch_currents.py`, then `python tools/fetch_currents.py --check`.
 
 ### What the fetch script enforces
@@ -621,7 +624,7 @@ for you:
 | Rule | Why |
 |---|---|
 | Resampled onto `model.json`'s exact axes, nearest neighbour | The renderer's field cropper has one shared grid per document; see above |
-| A day's tolerance on the time match, not open-ended `nearest` | Plain `xarray` nearest-match never fails — it would silently hand a request three months in the future the latest day GLORYS has, mislabelled |
+| A day's tolerance on the time match, not open-ended `nearest` | Plain `xarray` nearest-match never fails: it would silently hand a request three months in the future the latest day GLORYS has, mislabelled |
 | Frames after GLORYS's own latest day come out **null** | GLORYS is a reanalysis and runs behind the live INCOIS ten-day analysis; a null frame falls back to the existing "nearest available frame, offset stated" machinery every other field already uses, rather than inventing one |
 | Speed (`√(u²+v²)`) range-checked 0–5 m/s, components ±20 m/s | The fastest boundary jets in this basin run under 2 m/s; anything past 5 is a pipeline defect, not a current |
 | Rounded to 4 decimals (~0.1 mm/s) | Past GLORYS's own noise floor, not into it |
@@ -629,15 +632,15 @@ for you:
 ### What's still synthetic here
 
 The glyphs' **sqrt-length scaling**, decimation, and `InstancedMesh` batching
-(below) are unchanged — they read whatever `velocityU`/`velocityV` the active
+(below) are unchanged: they read whatever `velocityU`/`velocityV` the active
 field carries, real or synthetic, and always did.
 
 ---
 
-## 🌀 Derived layers: isosurface, D26 and TCHP
+## Derived layers: isosurface, D26 and TCHP
 
 Three layers computed from the temperature volume already in memory. No extra
-data — which is the point: these are the quantities operational centres actually
+data, which is the point: these are the quantities operational centres actually
 watch, and they fall out of a field the app is already rendering.
 
 ### Isosurface
@@ -646,7 +649,7 @@ The depth at which the field crosses a threshold, as a shaded relief surface.
 
 Implemented as a **single-valued depth surface per water column** rather than
 general marching cubes. Below the mixed layer temperature is monotonic, so the
-isotherm has exactly one depth per column — this is the correct shape, not an
+isotherm has exactly one depth per column: this is the correct shape, not an
 approximation of one. It is also far cheaper than a full volumetric extraction.
 
 Columns where the field never crosses the threshold emit **no geometry**, and
@@ -657,7 +660,7 @@ something very different from one spanning all of it.
 
 ### D26
 
-The **D26** preset jumps the threshold to 26 °C — the conventional floor of the
+The **D26** preset jumps the threshold to 26 °C, the conventional floor of the
 layer that can fuel a tropical cyclone. In the bundled field it sits at
 **43–124 m**, which is the right range for this basin.
 
@@ -682,14 +685,14 @@ rather than integrating something with no physical meaning.
 > produced TCHP of 119–883 kJ cm⁻², roughly an order of magnitude too high. The
 > field now uses a mixed layer over an exponential thermocline, giving a
 > realistic column (29.5 °C surface, 7.6 °C at 500 m, 3.0 °C at depth). Every
-> derived quantity depends on that shape, so getting it wrong is not cosmetic —
+> derived quantity depends on that shape, so getting it wrong is not cosmetic,
 > and a linear ramp is the kind of thing an oceanographer spots instantly.
 
 ---
 
-## 🌀 Case study: Cyclone Mocha, May 2023
+## Case study: Cyclone Mocha, May 2023
 
-One control in the scene panel — **Cyclone Mocha 2023** — swaps the whole
+One control in the scene panel, **Cyclone Mocha 2023**, swaps the whole
 snapshot: the May 2023 INCOIS field, the IBTrACS best track, and the twelve Argo
 floats that came nearest the storm. It frames the Bay of Bengal, enables the
 heat layer and the track, and opens on **2023-05-11**, where the run to 145 kt
@@ -706,8 +709,8 @@ no cyclone. That is not a pipeline gap: IBTrACS is current to 2026-08-30 with
 Apr–Jun and Oct–Dec. A cyclone-heat layer with no cyclone to point at
 demonstrates nothing, so the case study travels to a storm. `argo.json`,
 `model.json` and `instruments.json` are never touched, and `cyclone.json`
-carries its own `model` and `argo` blocks in exactly their schema — entering the
-case study swaps documents rather than adding a second way to read a field.
+carries its own `model` and `argo` blocks in exactly their schema, so entering
+the case study swaps documents rather than adding a second way to read a field.
 
 ### The finding: TCHP is a lead, not a diagnosis
 
@@ -719,7 +722,7 @@ failure is the interesting part.
 | TCHP under the storm **as** it intensified (24 h ending now, RI ≥ 30 kt) | RI steps **42.2** kJ cm⁻² vs **41.1** for every other step. Nothing. |
 | TCHP under the storm vs the **next 24 h** | **r ≈ +0.9**, n = 45 |
 
-Mocha reached its 145 kt peak over TCHP of **25.7 kJ cm⁻²** — downstream, near
+Mocha reached its 145 kt peak over TCHP of **25.7 kJ cm⁻²**, downstream, near
 the coast, over the cold wake it had upwelled itself. Anyone building a
 "high heat means strong cyclone" readout would be building a claim this data
 refutes.
@@ -744,7 +747,7 @@ date, so by 2023-05-10 Mocha's cold wake is already inside the field.
 Predicting a storm from an analysis that has absorbed that storm's effect is
 leakage. Sampling the nearest frame instead inflates the corridor by 10–20 kJ
 cm⁻² in exactly the cells the storm had just churned, moves the split from 8/37
-to 31/14, and — because Pearson *r* is invariant under a shift — leaves the
+to 31/14, and (because Pearson *r* is invariant under a shift) leaves the
 correlation looking just as good while describing something else.
 
 **The correlation is not just landfall.** Mocha's collapse from 145 kt to 20 kt
@@ -757,7 +760,7 @@ land:
 | Full track | 45 | +0.91 | +38.5 kt | −2.2 kt |
 | Landfall-free | 35 | +0.88 | +38.5 kt | **+20.2 kt** |
 
-The separation survives, and it narrows honestly — from a 41 kt gap to 18 kt,
+The separation survives, and it narrows honestly, from a 41 kt gap to 18 kt,
 because the sub-threshold group is no longer carrying the decay.
 
 ### Why r is quoted to one decimal
@@ -772,7 +775,7 @@ returns **+0.874** where this rule returns **+0.911**.
 Both support the same conclusion and neither rule is wrong, so the app states
 **r ≈ +0.9** in the sentence a reader would quote, and carries the exact figure
 and the rule that produced it alongside. A judge who recomputes this with their
-own windowing will land somewhere in 0.87–0.91 — which is the point. The
+own windowing will land somewhere in 0.87–0.91, which is the point. The
 finding is robust; the third digit is not, and claiming it would be the one
 attackable number in an otherwise defensible result.
 
@@ -791,14 +794,14 @@ Means, not steps: sub-threshold fixes did intensify.
 ```
 
 **"Favourable for intensification", never "will intensify".** The separation is
-in the means, not step by step — one sub-50 step still gained 42 kt. That
+in the means, not step by step: one sub-50 step still gained 42 kt. That
 sentence lives in `analysis.caveat` in the JSON, is printed in the control
 panel, is wrapped into the exported PNG's provenance strip, and is asserted
 non-empty by `--check`, so it cannot be dropped by editing one file.
 
 ### Track rendering
 
-The best track is a spline through the three-hourly IBTrACS fixes — a cyclone
+The best track is a spline through the three-hourly IBTrACS fixes: a cyclone
 genuinely does travel a continuous path, the same reasoning that gives a glider
 a spline and denies a drifting float one. Each fix is an instanced sphere whose
 **area is proportional to wind speed**, stated in the legend rather than left as
@@ -808,7 +811,7 @@ is warm, so a red or orange track would vanish into exactly the values it marks.
 
 Fixes outside the rendered region are **dropped, not clamped**. Mocha made
 landfall past the corner of the analysed domain, and five fixes carry
-`tchpPre: null` because the cell under them is land or unanalysed — they are
+`tchpPre: null` because the cell under them is land or unanalysed: they are
 excluded from the statistics rather than taking a nearest-edge value.
 
 A storm has no water column, so the cyclone registry entry declares no
@@ -821,7 +824,7 @@ registry, not special-cased by id.
 and both group means from the track as written, recomputes TCHP for every fix
 straight out of the bundled temperature field and requires it to match to
 0.05 kJ cm⁻², asserts the predictor is the earliest frame, and fails if the lag
-framing ever finds zero RI steps in a storm that gained 120 kt — which is
+framing ever finds zero RI steps in a storm that gained 120 kt, which is
 exactly how a sign error in the intensity difference was caught.
 
 > Best-track data from IBTrACS v04r01, NOAA NCEI. Intensity is `USA_WIND`, the
@@ -830,7 +833,7 @@ exactly how a sign error in the intensity difference was caught.
 
 ---
 
-## 🖼️ Export with provenance
+## Export with provenance
 
 **Export** saves the current view as a PNG with a provenance strip composited
 into the file:
@@ -846,41 +849,42 @@ Observations: real (Argo GDAC, 27 floats of 222 in basin, 101 INCOIS-managed, QC
 A bare screenshot of an ocean field is unusable as evidence. It travels far
 beyond whoever took it, and by then nobody knows the variable, the depth, the
 date, the region, or whether the numbers were measured or generated. Everything
-needed to interpret — or challenge — the image is burned into the image.
+needed to interpret, or challenge, the image is burned into the image.
 
 The last line is the one that matters most: it states plainly which half of the
 figure is real. A slide deck circulating without it is exactly how a synthetic
 field ends up quoted as an observation. It is written per variable, not per
-app — temperature and salinity come from the INCOIS grid, currents and
-chlorophyll are still generated, and one sentence covering both would be false
-about one of them. It turns green only when nothing in the frame is generated.
+app: temperature, salinity and currents come from real sources (INCOIS and
+Copernicus Marine), chlorophyll is still generated, and one sentence covering
+all of them would be false about one. It turns green only when nothing in the
+frame is generated.
 
 Files are named `incois-ocean3d_<variable>_<date>_<timestep>.png`, so a folder
 of exports sorts meaningfully.
 
-> **Implementation note.** The renderer runs without `preserveDrawingBuffer` —
-> keeping it on costs memory and bandwidth on every frame — so by the time a
+> **Implementation note.** The renderer runs without `preserveDrawingBuffer`.
+> Keeping it on costs memory and bandwidth on every frame, so by the time a
 > click handler runs the drawing buffer is undefined and `toDataURL()` returns a
 > blank image. `captureFrame()` renders immediately before reading, synchronously.
 > An `await` between the two lets the compositor clear the buffer first.
 
 ---
 
-## 🧭 Current vectors
+## Current vectors
 
 The problem statement asks for current **vectors**. Particles convey flow
 pattern but not magnitude, so they are paired with glyphs that carry both:
 direction from the u/v components, magnitude from length and colour on the same
 `speed` colormap the field uses, so a glyph can be read against the colorbar.
 
-The u/v components themselves are real — Copernicus Marine GLORYS12V1, see
-[Real current vectors](#-real-current-vectors) — but nothing below changed to
+The u/v components themselves are real (Copernicus Marine GLORYS12V1, see
+[Real current vectors](#-real-current-vectors)), but nothing below changed to
 make that true; the glyphs always read whatever `velocityU`/`velocityV` the
 active field carries.
 
 - **Decimated** to ~18 glyphs across. One per grid cell becomes noise long
   before it becomes information.
-- **Length ∝ √speed**, not linear — a wide speed range makes slow flow invisible
+- **Length ∝ √speed**, not linear: a wide speed range makes slow flow invisible
   under linear scaling. The legend says so, because otherwise lengths are
   misread.
 - A **reference magnitude** is stated (`⟶ longest glyph = 0.57 m s⁻¹ at 200 m`).
@@ -891,7 +895,7 @@ active field carries.
 
 ---
 
-## 🌍 Two views: overview globe → depth volume
+## Two views: overview globe → depth volume
 
 The app opens on a **globe**, not the volume. That mirrors how INCOIS operators
 already choose what to look at:
@@ -908,7 +912,7 @@ camera arrives. The **Overview** button returns to the globe.
 The camera *flies* rather than cuts, deliberately: the transition is what
 explains that the box you land in is the region you just clicked.
 
-**Rendering.** The default Digital Ocean globe is procedural — an ocean sphere,
+**Rendering.** The default Digital Ocean globe is procedural: an ocean sphere,
 a graticule, coastlines, a view-angle atmospheric rim, and a tessellated domain
 patch that curves with the surface. Users can also select **NASA Blue Marble**
 from the Overview picker. Its locally bundled 5400×2700 January base map is
@@ -944,7 +948,7 @@ What follows a selection:
 | `VIEW` | the active bounds; `DOMAIN` stays the outer limit of available data |
 | `SCENE_W` / `SCENE_D` | re-derived, so a tall narrow selection is not stretched to fill a wide box |
 | Model field | regenerated over the selection, the way a subsetting backend would return it |
-| Markers | filtered to the selection — otherwise the coordinate transform projects an outside float *into* the box, placing it where it was never measured |
+| Markers | filtered to the selection, otherwise the coordinate transform projects an outside float *into* the box, placing it where it was never measured |
 | Scale badge | states the rendered extent and appends `· selected` |
 
 `VIEW` is an `export let` in `constants.js`: ES module live bindings mean every
@@ -954,9 +958,9 @@ degenerate box divides by zero in the coordinate transform.
 
 ---
 
-## ⚙️ Module Reference
+## Module Reference
 
-### `state.js` — Reactive State Store
+### `state.js`: Reactive State Store
 
 Single source of truth for all application state. No component holds authoritative state directly.
 
@@ -1000,7 +1004,7 @@ const snap = State.snapshot();
 
   // Model layers are listed explicitly. Instrument layers are keyed by
   // PLUGIN_REGISTRY id ('argo', 'glider', 'ctd', 'bgc', 'mooring', …) and
-  // default to visible when absent — a new plugin needs no edit here.
+  // default to visible when absent: a new plugin needs no edit here.
   layers: {
     seaSurface:        true,
     lonSection:        true,
@@ -1022,20 +1026,20 @@ const snap = State.snapshot();
 
 ---
 
-### `constants.js` — Shared Constants
+### `constants.js`: Shared Constants
 
 Zero dependencies. Imported by both `utils.js` and `dataService.js` to avoid circular dependency.
 
 ```js
 export const DOMAIN = {
   lonMin: 55, lonMax: 95,     // Full basin extent °E
-  latMin: -10, latMax: 25,    // Straddles equator — prints hemispheres (e.g. 10°S–25°N)
+  latMin: -10, latMax: 25,    // Straddles equator: prints hemispheres (e.g. 10°S–25°N)
   depthMin: 0, depthMax: 2000,
 };
 
 export const SCENE_SPAN = 14; // Longest horizontal axis in Three.js units
 export const SCENE_H = 10;    // Y span (depth, before exaggeration)
-export let SCENE_W, SCENE_D;  // Computed from VIEW aspect ratio — recomputed on selection
+export let SCENE_W, SCENE_D;  // Computed from VIEW aspect ratio: recomputed on selection
 
 // Operational thresholds for tropical cyclone intensification (Phase 3)
 export const TCHP_THRESHOLD = 50;  // kJ cm⁻²
@@ -1050,7 +1054,7 @@ export function isSubRegion()     { ... } // True when a sub-region is selected
 
 ---
 
-### `dataService.js` — Mock Data Service & Plugin Registry
+### `dataService.js`: Mock Data Service & Plugin Registry
 
 **This is the backend seam.** Every function is `async`. No other module generates or reads raw data.
 
@@ -1062,7 +1066,7 @@ import {
   getInstrumentPlatforms,  // Platform list for one source type
   getProfile,              // Depth profile nearest a given model timestep
   getAllPlatforms,          // Merged list across all registered sources
-  sampleModelColumn,       // Co-located model column at (lat, lon, atTime) — Phase 3
+  sampleModelColumn,       // Co-located model column at (lat, lon, atTime): Phase 3
   isModelVariableReal,     // True when the model carries a real field for a variable
   whenDataReady,           // Promise: resolves once all JSON files are loaded
   getModelFrames,          // Array of ISO timestamps the model actually holds
@@ -1135,7 +1139,7 @@ VARIABLE_META = {
 
 ---
 
-### `utils.js` — Utilities & Coordinate Conversion
+### `utils.js`: Utilities & Coordinate Conversion
 
 #### `latLonDepthToScene(lat, lon, depthM, vertExag)` ← **THE GLOBE SWAP SEAM**
 
@@ -1151,7 +1155,7 @@ const pos = latLonDepthToScene(14.2, 71.8, 200, 5);
 
 #### Color Palettes
 
-Palettes are approximations of **cmocean** (Thyng et al., 2016) — the colormap set
+Palettes are approximations of **cmocean** (Thyng et al., 2016): the colormap set
 oceanographers expect per variable. They are perceptually uniform: equal steps in
 value look like equal steps in colour, and they remain readable under colour-vision
 deficiency.
@@ -1164,7 +1168,7 @@ deficiency.
 | `speed` | Current magnitude | sequential |
 | `balance` | Anomalies / signed fields | diverging |
 | `viridis`, `cividis` | General purpose (`cividis` is colour-vision safe) | sequential |
-| `jet` | **Not for presenting data** — retained only to demonstrate the difference | — |
+| `jet` | **Not for presenting data**: retained only to demonstrate the difference | — |
 
 > `jet` is non-monotonic in lightness: it invents banding where the field is smooth
 > and flattens real gradients in the green band. Selecting it raises an on-screen
@@ -1199,7 +1203,7 @@ const texData = generateHeatmapTexture(
 
 ---
 
-### `scene.js` — Three.js 3D Scene Manager
+### `scene.js`: Three.js 3D Scene Manager
 
 **Owns the entire WebGL world.** Responds to state changes via subscriptions.
 
@@ -1207,20 +1211,20 @@ const texData = generateHeatmapTexture(
 
 ```
 THREE.Scene
-├── Stars (Points — 1800 particles, ambient drift)
+├── Stars (Points: 1800 particles, ambient drift)
 ├── _oceanBoxGroup (Group)
 │   ├── Box wireframe edge mesh
 │   ├── Axis lines (X=cyan, Z=teal, Y=violet)
-│   ├── waveSurface (Mesh — decorative animated air-sea interface, y=0.8)
-│   ├── seaSurface (Mesh — horizontal heatmap plane at y=0)
-│   ├── depthSlice (Mesh — horizontal heatmap plane at current depth)
-│   ├── lonSection (Mesh — vertical E-W cross-section curtain)
-│   ├── latSection (Mesh — vertical N-S cross-section curtain)
-│   ├── isosurface (Mesh — depth-of-threshold relief, vertex-coloured)
-│   ├── tchp (Mesh — derived cyclone-heat field at the surface)
-│   ├── currentVectors (InstancedMesh — 400 arrow glyphs)
-│   ├── bathymetryGrid (Mesh — wireframe floor plane)
-│   └── currentParticles (Points — 3000 animated drift particles)
+│   ├── waveSurface (Mesh: decorative animated air-sea interface, y=0.8)
+│   ├── seaSurface (Mesh: horizontal heatmap plane at y=0)
+│   ├── depthSlice (Mesh: horizontal heatmap plane at current depth)
+│   ├── lonSection (Mesh: vertical E-W cross-section curtain)
+│   ├── latSection (Mesh: vertical N-S cross-section curtain)
+│   ├── isosurface (Mesh: depth-of-threshold relief, vertex-coloured)
+│   ├── tchp (Mesh: derived cyclone-heat field at the surface)
+│   ├── currentVectors (InstancedMesh: 400 arrow glyphs)
+│   ├── bathymetryGrid (Mesh: wireframe floor plane)
+│   └── currentParticles (Points: 3000 animated drift particles)
 └── _markerGroup (Group)
     ├── Argo sphere markers × N
     ├── Glider sphere markers + CatmullRom spline tracks
@@ -1234,7 +1238,7 @@ THREE.Scene
 ```js
 import { initScene, handleCanvasClick, getCamera, getScene, refreshMarkers } from './scene.js';
 
-// Boot the 3D scene (async — awaits first data load)
+// Boot the 3D scene (async: awaits first data load)
 await initScene(canvasElement);
 
 // Hit-test markers on click → returns platform object or null
@@ -1260,7 +1264,7 @@ await refreshMarkers();
 
 ---
 
-### `charts.js` — Canvas 2D Rendering
+### `charts.js`: Canvas 2D Rendering
 
 No external charting library. Pure Canvas 2D API.
 
@@ -1287,7 +1291,7 @@ Renders the sonar-style circular depth dial:
 
 ---
 
-### `ui.js` — UI Wiring
+### `ui.js`: UI Wiring
 
 Connects DOM events → State updates. Subscribes to State → updates DOM. Never touches raw data.
 
@@ -1319,7 +1323,7 @@ hideLoading();
 
 ---
 
-## 📡 Data Contracts / API Schema
+## Data Contracts / API Schema
 
 These are the exact response shapes the mock returns today and that a real backend **must** match.
 
@@ -1340,15 +1344,15 @@ These are the exact response shapes the mock returns today and that a real backe
   },
   "grid": { "nx": 41, "ny": 36, "nz": 24 },
   "depths": [5, 10, 15, 20, "…", 2000],
-  "values": "Float32Array — length nx×ny×nz, row-major (x, y, z); NaN for land/no-data"
+  "values": "Float32Array: length nx×ny×nz, row-major (x, y, z); NaN for land/no-data"
 }
 ```
 
 For `variable = "currents"`, two extra fields are included:
 ```json
 {
-  "velocityU": "Float32Array — eastward component (m/s)",
-  "velocityV": "Float32Array — northward component (m/s)"
+  "velocityU": "Float32Array: eastward component (m/s)",
+  "velocityV": "Float32Array: northward component (m/s)"
 }
 ```
 
@@ -1418,12 +1422,12 @@ strikes through the variable button, rather than rendering an empty chart.
 
 ---
 
-## 🔗 Connecting a real dataset or a live feed
+## Connecting a real dataset or a live feed
 
 Everything the frontend knows about data enters through **one file**,
 `js/dataService.js`. Nothing in `scene.js`, `ui.js`, `charts.js` or `globe.js`
 reads a URL or parses a payload. Swapping a source means changing a function
-body there and nothing else — the Argo connector already proves this: it
+body there and nothing else, which the Argo connector already proves: it
 replaced a mock generator without touching the renderer.
 
 Three deployment shapes, in increasing order of effort.
@@ -1437,7 +1441,7 @@ tools/fetch_argo.py  →  js/data/argo.json  →  dataService.js  →  UI
 ```
 
 Right for a demo and for offline resilience: no network at runtime, so a bad
-venue connection cannot break the app. Wrong for operations — the data is as old
+venue connection cannot break the app. Wrong for operations: the data is as old
 as the last fetch.
 
 ### 2. REST backend (the realistic INCOIS deployment)
@@ -1445,7 +1449,7 @@ as the last fetch.
 Stand a thin API in front of the NetCDF archive and replace the function bodies:
 
 ```js
-// dataService.js — the only file that changes
+// dataService.js: the only file that changes
 export async function getModelField(variable, date, timestep) {
   const r = await fetch(`/api/model/${variable}/${date}/${timestep}`);
   if (!r.ok) throw new Error(`model field ${r.status}`);
@@ -1492,7 +1496,7 @@ the app can consume national and international portals without custom code:
 | **OPeNDAP / THREDDS** | Subset NetCDF over HTTP without downloading whole files | Server-side `[start:step:stop]` slicing. INCOIS already runs a THREDDS-style Live Access Server |
 | **OGC WMS** | Pre-rendered map tiles | Cheapest path to a 2D basemap layer; `ncWMS` sits directly on a THREDDS catalogue |
 | **OGC WCS** | Raw coverage values, not pictures | The right choice for the 3D volume, since the renderer needs numbers |
-| **ERDDAP** | Tabular observations with server-side filtering | What the bundled Argo already uses — `tools/fetch_argo.py` is a working ERDDAP client |
+| **ERDDAP** | Tabular observations with server-side filtering | What the bundled Argo already uses: `tools/fetch_argo.py` is a working ERDDAP client |
 
 ### Practical notes, learned building the Argo connector
 
@@ -1524,7 +1528,7 @@ cmocean palette. Neither requires touching the renderer.
 
 ---
 
-## 🔌 Adding New Data Sources (Plugin Registry)
+## Adding New Data Sources (Plugin Registry)
 
 The `PLUGIN_REGISTRY` array in `dataService.js` is the only thing you need to edit to add a new sensor type, ML-derived product, or data source. **Zero UI or scene code changes required.**
 
@@ -1532,10 +1536,10 @@ The `PLUGIN_REGISTRY` array in `dataService.js` is the only thing you need to ed
 
 ```js
 {
-  id:               string,    // Unique key — matches the 'type' field in platform objects
+  id:               string,    // Unique key: matches the 'type' field in platform objects
   label:            string,    // Human-readable display name
-  markerColor:      string,    // CSS hex — 3D sphere marker fill color
-  glowColor:        string,    // CSS hex with alpha — glow ring color
+  markerColor:      string,    // CSS hex: 3D sphere marker fill color
+  glowColor:        string,    // CSS hex with alpha: glow ring color
   profileVariables: string[],  // Variables available in the profile chart
   trackStyle:       string,    // 'none' | 'spline' | 'line'
   fetchFn:          async fn,  // Returns Platform[] matching the contract above
@@ -1545,7 +1549,7 @@ The `PLUGIN_REGISTRY` array in `dataService.js` is the only thing you need to ed
 ### Example: Adding an HF Radar Source
 
 ```js
-// In js/dataService.js — add ONE entry to PLUGIN_REGISTRY:
+// In js/dataService.js: add ONE entry to PLUGIN_REGISTRY:
 {
   id: 'hfradar',
   label: 'HF Radar',
@@ -1574,7 +1578,7 @@ That's it. The new source will automatically appear in the layers panel, render 
 
 ---
 
-## 🏗️ Architecture Decisions
+## Architecture Decisions
 
 ### Why No Framework?
 
@@ -1604,7 +1608,7 @@ main.js
 │   │   ├── dataService.js
 │   │   └── utils.js
 │   └── utils.js
-└── (error handling — direct DOM, no deps)
+└── (error handling: direct DOM, no deps)
 ```
 
 > `constants.js` is a leaf node with zero imports, breaking what would otherwise be a circular dependency between `dataService.js` and `utils.js`.
@@ -1624,13 +1628,13 @@ Three.js is loaded via a **browser-native importmap** in `index.html`:
 </script>
 ```
 
-This resolves both your code's `import * as THREE from 'three'` **and** OrbitControls' internal bare `import { ... } from 'three'` — which would otherwise crash with `"Failed to resolve module specifier 'three'"`.
+This resolves both your code's `import * as THREE from 'three'` **and** OrbitControls' internal bare `import { ... } from 'three'`: which would otherwise crash with `"Failed to resolve module specifier 'three'"`.
 
 To upgrade Three.js: change the version string in these two URLs only.
 
 ---
 
-## 🔧 Configuration Reference
+## Configuration Reference
 
 ### Adjusting the Geographic Domain
 
@@ -1644,7 +1648,7 @@ export const DOMAIN = {
 ```
 
 The globe patch, the volume box, marker placement, camera framing and the date
-bounds all derive from this — nothing else needs editing. **But it also decides
+bounds all derive from this: nothing else needs editing. **But it also decides
 which real observations exist:** `tools/fetch_argo.py` carries the same bounds
 and must be re-run after a change.
 
@@ -1674,13 +1678,13 @@ const nx = 41, ny = 36, nz = 24;   // ← Match your real NetCDF grid dimensions
 
 ### Adjusting Scene Scale
 
-`SCENE_W` and `SCENE_D` are computed from `SCENE_SPAN` and the selection's aspect ratio — changing them manually has no effect. `SCENE_H` and `SCENE_SPAN` can be tuned:
+`SCENE_W` and `SCENE_D` are computed from `SCENE_SPAN` and the selection's aspect ratio: changing them manually has no effect. `SCENE_H` and `SCENE_SPAN` can be tuned:
 
 In `js/constants.js`:
 ```js
 export const SCENE_SPAN = 14; // Longest horizontal axis in Three.js units
 export const SCENE_H = 10;    // Y span in Three.js units (depth, pre-exaggeration)
-// SCENE_W and SCENE_D are derived — do not set them directly
+// SCENE_W and SCENE_D are derived: do not set them directly
 ```
 
 ### Adding a New Color Palette
@@ -1697,89 +1701,89 @@ Then add it to the `<select id="ctrl-palette">` in `index.html`.
 
 ---
 
-## 📋 Feature Checklist
+## Feature Checklist
 
 | Feature | Status | Notes |
 |---|---|---|
-| 3D ocean box with labelled axes | ✅ | Lon / Lat / Depth |
-| Sea surface heatmap | ✅ | Depth iz=0 slice |
-| Domain-derived scene dimensions | ✅ | Aspect preserved when `DOMAIN` changes |
-| Isosurface extraction | ✅ | Depth-of-threshold surface; no geometry where uncrossed |
-| D26 preset | ✅ | 26 °C isotherm, 43–124 m in the bundled field |
-| TCHP derived layer | ✅ | Fixed 0–160 kJ cm⁻² scale, threshold stated |
-| Current vector glyphs | ✅ | Instanced, decimated, √-scaled, reference magnitude |
-| Realistic thermocline in synthetic field | ✅ | Mixed layer + exponential, not a linear ramp |
-| PNG export with provenance | ✅ | Variable, region, depth, time, scale and real-vs-synthetic |
-| Hemisphere-aware coordinates | ✅ | `2.274°S`, not `-2.274°N` |
-| Depth-slice draggable plane | ✅ | Controlled by depth slider |
-| Longitudinal cross-section | ✅ | Mid-latitude vertical curtain |
-| Latitudinal cross-section | ✅ | Mid-longitude vertical curtain |
-| Current particle animation | ✅ | 3000 additive-blended sprites; auto-enabled on Currents |
-| Animated water surface | ✅ | GPU vertex shader, toggleable, marked `decor` in the layer list |
-| Argo float markers | ✅ | **Real** WMO floats, raycasted, profile on click |
-| Glider spline tracks | ✅ | CatmullRom spline over real dive positions |
-| CTD cast markers | ✅ | Real GO-SHIP casts, one platform per cruise |
-| BGC float markers | ✅ | **Real** adjusted chlorophyll profiles |
-| Moorings | ✅ | Real Indian OMNI buoys, nine-level T/S, three-hourly |
-| Click-to-profile panel | ✅ | Depth-vs-variable Canvas chart |
-| Multi-variable profile toggle | ✅ | Per-platform; QC-depleted variables struck through |
-| Platform metadata display | ✅ | WMO, cycle, data mode, adjusted/raw, levels, max pressure |
-| Colorbar editor (palette) | ✅ | cmocean set + colour-vision-safe fallbacks |
-| Colorbar editor (min/max) | ✅ | Live re-texture; limits fixed across the animation |
-| Linear / Log scale toggle | ✅ | Colorbar is labelled `log₁₀` when active |
-| Interior colorbar ticks | ✅ | Numeric values, not just endpoints |
-| Vertical exaggeration stated on screen | ✅ | Badge with factor + domain bounds |
-| Palette advisory | ✅ | Warns on `jet`; notes centring on diverging scales |
-| Layer opacity slider | ✅ | Global across all heatmap planes |
-| Vertical exaggeration slider | ✅ | Y-axis scale 1–20× |
-| Layer visibility checkboxes | ✅ | Per-layer toggle |
-| Timeline scrubber | ✅ | 4 time steps (00:00 / 06:00 / 12:00 / 18:00) |
-| Timeline play/pause | ✅ | Auto-advances with accumulator |
-| Timeline playback speed | ✅ | 0.5× / 1× / 2× / 4× |
-| Sonar depth gauge dial | ✅ | Signature element, Canvas 2D |
-| Colorbar legend | ✅ | Live gradient strip with units |
-| Ambient particulate | ✅ | 1800 points, tinted to the water column |
-| Bathymetry wireframe grid | ✅ | Ocean floor |
-| WebGL2 graceful degradation | ✅ | Clear error message if unsupported |
-| Visual error display | ✅ | No DevTools needed; errors shown on loading screen |
-| Responsive layout (tablet) | ✅ | Panels collapse on ≤768px |
-| No build step / no npm | ✅ | Open and run |
-| Plugin registry | ✅ | Add sensor in 1 object, 0 other file changes |
-| dataService backend seam | ✅ | One function body change per endpoint |
-| Overview globe selector | ✅ | Procedural, embedded coastlines, no runtime fetch |
-| Camera flight between views | ✅ | 1.15 s eased; explains the region-to-volume link |
-| Drag-to-select area on globe | ✅ | LAS-style lat/lon box, raycast to the sphere |
-| Volume re-renders the selection | ✅ | Field, markers, scene dims and badge all follow |
-| Real Argo ingestion + QC | ✅ | Flags 1–2, whole-profile flags, adjusted vs raw by data mode |
-| Real BGC chlorophyll | ✅ | `chla_adjusted` only; raw is overwhelmingly flag 3 |
-| Pressure vs depth honesty | ✅ | Axis reads `Pressure (dbar)` for Argo, never metres |
-| QC gaps preserved | ✅ | Nulls break the line; never filled with zero |
-| Model/observation time offset | ✅ | Stated per profile, colour-graded, real and synthetic |
-| Date bounded to real coverage | ✅ | Read from `argo.json`, not hardcoded |
-| Provenance badge | ✅ | Real vs synthetic stated in chrome and per platform |
-| Reduced-motion support | ✅ | Waves freeze, camera cuts instead of flying |
-| Favicon + meta description | ✅ | Inline SVG data URI; cannot 404 |
+| 3D ocean box with labelled axes | Done | Lon / Lat / Depth |
+| Sea surface heatmap | Done | Depth iz=0 slice |
+| Domain-derived scene dimensions | Done | Aspect preserved when `DOMAIN` changes |
+| Isosurface extraction | Done | Depth-of-threshold surface; no geometry where uncrossed |
+| D26 preset | Done | 26 °C isotherm, 43–124 m in the bundled field |
+| TCHP derived layer | Done | Fixed 0–160 kJ cm⁻² scale, threshold stated |
+| Current vector glyphs | Done | Instanced, decimated, √-scaled, reference magnitude |
+| Realistic thermocline in synthetic field | Done | Mixed layer + exponential, not a linear ramp |
+| PNG export with provenance | Done | Variable, region, depth, time, scale and real-vs-synthetic |
+| Hemisphere-aware coordinates | Done | `2.274°S`, not `-2.274°N` |
+| Depth-slice draggable plane | Done | Controlled by depth slider |
+| Longitudinal cross-section | Done | Mid-latitude vertical curtain |
+| Latitudinal cross-section | Done | Mid-longitude vertical curtain |
+| Current particle animation | Done | 3000 additive-blended sprites; auto-enabled on Currents |
+| Animated water surface | Done | GPU vertex shader, toggleable, marked `decor` in the layer list |
+| Argo float markers | Done | **Real** WMO floats, raycasted, profile on click |
+| Glider spline tracks | Done | CatmullRom spline over real dive positions |
+| CTD cast markers | Done | Real GO-SHIP casts, one platform per cruise |
+| BGC float markers | Done | **Real** adjusted chlorophyll profiles |
+| Moorings | Done | Real Indian OMNI buoys, nine-level T/S, three-hourly |
+| Click-to-profile panel | Done | Depth-vs-variable Canvas chart |
+| Multi-variable profile toggle | Done | Per-platform; QC-depleted variables struck through |
+| Platform metadata display | Done | WMO, cycle, data mode, adjusted/raw, levels, max pressure |
+| Colorbar editor (palette) | Done | cmocean set + colour-vision-safe fallbacks |
+| Colorbar editor (min/max) | Done | Live re-texture; limits fixed across the animation |
+| Linear / Log scale toggle | Done | Colorbar is labelled `log₁₀` when active |
+| Interior colorbar ticks | Done | Numeric values, not just endpoints |
+| Vertical exaggeration stated on screen | Done | Badge with factor + domain bounds |
+| Palette advisory | Done | Warns on `jet`; notes centring on diverging scales |
+| Layer opacity slider | Done | Global across all heatmap planes |
+| Vertical exaggeration slider | Done | Y-axis scale 1–20× |
+| Layer visibility checkboxes | Done | Per-layer toggle |
+| Timeline scrubber | Done | 4 time steps (00:00 / 06:00 / 12:00 / 18:00) |
+| Timeline play/pause | Done | Auto-advances with accumulator |
+| Timeline playback speed | Done | 0.5× / 1× / 2× / 4× |
+| Sonar depth gauge dial | Done | Signature element, Canvas 2D |
+| Colorbar legend | Done | Live gradient strip with units |
+| Ambient particulate | Done | 1800 points, tinted to the water column |
+| Bathymetry wireframe grid | Done | Ocean floor |
+| WebGL2 graceful degradation | Done | Clear error message if unsupported |
+| Visual error display | Done | No DevTools needed; errors shown on loading screen |
+| Responsive layout (tablet) | Done | Panels collapse on ≤768px |
+| No build step / no npm | Done | Open and run |
+| Plugin registry | Done | Add sensor in 1 object, 0 other file changes |
+| dataService backend seam | Done | One function body change per endpoint |
+| Overview globe selector | Done | Procedural, embedded coastlines, no runtime fetch |
+| Camera flight between views | Done | 1.15 s eased; explains the region-to-volume link |
+| Drag-to-select area on globe | Done | LAS-style lat/lon box, raycast to the sphere |
+| Volume re-renders the selection | Done | Field, markers, scene dims and badge all follow |
+| Real Argo ingestion + QC | Done | Flags 1–2, whole-profile flags, adjusted vs raw by data mode |
+| Real BGC chlorophyll | Done | `chla_adjusted` only; raw is overwhelmingly flag 3 |
+| Pressure vs depth honesty | Done | Axis reads `Pressure (dbar)` for Argo, never metres |
+| QC gaps preserved | Done | Nulls break the line; never filled with zero |
+| Model/observation time offset | Done | Stated per profile, colour-graded, real and synthetic |
+| Date bounded to real coverage | Done | Read from `argo.json`, not hardcoded |
+| Provenance badge | Done | Real vs synthetic stated in chrome and per platform |
+| Reduced-motion support | Done | Waves freeze, camera cuts instead of flying |
+| Favicon + meta description | Done | Inline SVG data URI; cannot 404 |
 
 ---
 
-## 🌐 Browser Support
+## Browser Support
 
 | Browser | Version | Status |
 |---|---|---|
-| Chrome / Chromium | 89+ | ✅ Full support |
-| Edge | 89+ | ✅ Full support |
-| Firefox | 108+ | ✅ Full support |
-| Safari | 16.4+ | ✅ Full support |
-| Mobile Chrome | Latest | ⚠️ Works, performance varies |
-| IE / Legacy Edge | Any | ❌ Not supported (no WebGL2 / importmap) |
+| Chrome / Chromium | 89+ | Full support |
+| Edge | 89+ | Full support |
+| Firefox | 108+ | Full support |
+| Safari | 16.4+ | Full support |
+| Mobile Chrome | Latest | Works, performance varies |
+| IE / Legacy Edge | Any | Not supported (no WebGL2 / importmap) |
 
 > **WebGL2 is required.** The app shows a clear error message if WebGL2 is not available instead of crashing.
 
 ---
 
-## 🌀 Disaster management: from visualisation to decision support
+## Disaster management: from visualisation to decision support
 
-INCOIS's operational mandate is hazard warning — cyclones, storm surge, tsunami,
+INCOIS's operational mandate is hazard warning: cyclones, storm surge, tsunami,
 high waves, search and rescue. A 3D viewer is not itself a forecast. What it
 does is make the *state the forecast depends on* legible fast, and let a
 forecaster check the model against real instruments before acting on it. That
@@ -1800,21 +1804,21 @@ These are not roadmap items; they work today and each maps to a real workflow.
 | Depth-slice navigation | Inspect the thermocline depth that governs upwelling and mixed-layer response |
 | Vertical exaggeration, stated on screen | The domain is ~1100 km wide and 2 km deep; without exaggeration the water column is invisible, and without the label the picture is misleading |
 
-### Cyclone intensification — the clearest case
+### Cyclone intensification: the clearest case
 
 Tropical cyclone intensity in the Arabian Sea and Bay of Bengal is strongly
 controlled by upper-ocean heat, not surface temperature alone. Two quantities
 matter, and both are derivable from data this app already renders:
 
-- **Depth of the 26 °C isotherm (D26)** — the conventional floor of the layer
+- **Depth of the 26 °C isotherm (D26)**: the conventional floor of the layer
   that can fuel a cyclone.
-- **Tropical Cyclone Heat Potential (TCHP)** — heat integrated from the surface
+- **Tropical Cyclone Heat Potential (TCHP)**: heat integrated from the surface
   down to D26.
 
-**Both are now implemented** — see [Derived layers](#-derived-layers-isosurface-d26-and-tchp).
+**Both are now implemented**: see [Derived layers](#-derived-layers-isosurface-d26-and-tchp).
 D26 is an isosurface of the temperature volume; TCHP is a vertical integral of
 it. Neither needed new data, only derived layers over the field already in
-memory — and they now sit on a real INCOIS analysis rather than a generated
+memory, and they now sit on a real INCOIS analysis rather than a generated
 one. Computed D26 reproduces INCOIS's own published D26 field to a mean
 absolute difference of 0.018 m over 1,175 co-located cells, the residual being
 the two-decimal rounding applied when the field is written to disk
@@ -1823,7 +1827,7 @@ the two-decimal rounding applied when the field is written to disk
 
 **Live favourability readout** (Phase 3). Outside the case study, the TCHP key
 now reports what fraction of the visible ocean meets *both* criteria for cyclone
-rapid intensification — `TCHP ≥ 50 kJ cm⁻²` **and** `D26 ≥ 50 m` — computed
+rapid intensification (`TCHP ≥ 50 kJ cm⁻²` **and** `D26 ≥ 50 m`), computed
 inside the existing `_computeTCHP()` loop with no extra pass. The denominator is
 wet cells (cells with finite temperature), not the bounding box, and the entire
 block is gated on `_modelData.real` so synthetic fallback data never generates a
@@ -1831,8 +1835,8 @@ bogus operational claim. The Cyclone Mocha case-study track-lead readout
 continues to take priority when the case study is active.
 
 **Model vs observation comparison** (Phase 3). Opening any instrument profile
-now overlays the co-located model column — sampled from the uncropped
-`_modelDoc` at the nearest spatial cell and nearest time frame — as a dashed
+now overlays the co-located model column, sampled from the uncropped
+`_modelDoc` at the nearest spatial cell and nearest time frame, as a dashed
 line on the same depth-vs-variable canvas. The model is truncated to the max
 depth of the observed profile (so a 200 m glider dive is not squashed), the
 value axis spans both series, the plot area is clipped, and a compact legend
@@ -1884,7 +1888,7 @@ Being concrete about the gap, in dependency order:
    period; without one, "unusually warm" cannot be stated.
 5. **Forecast lead time and uncertainty.** Ensemble spread or a stated error
    bound. A single deterministic field shown without uncertainty invites more
-   confidence than it earns — the same failure the QC and time-offset work
+   confidence than it earns: the same failure the QC and time-offset work
    already guards against elsewhere in this app.
 6. **Alerting.** Threshold rules over derived layers (for example TCHP above a
    basin-specific value along a forecast track) feeding INCOIS's existing
@@ -1895,20 +1899,20 @@ Being concrete about the gap, in dependency order:
 
 This is a visualisation and verification tool. It does not forecast, and
 attaching a prediction to it would mean building and validating an ocean or
-cyclone model — a different project with a different burden of proof. The value
+cyclone model: a different project with a different burden of proof. The value
 it adds to disaster management is speed and correctness of interpretation:
 faster reading of the ocean state, and fewer confident conclusions drawn from
 data that was stale, unadjusted, or quality-flagged.
 
 ---
 
-## 🔮 Future Roadmap
+## Future Roadmap
 
 **Data**
 - [x] Real Argo GDAC profiles with QC (16 floats, 456 profiles, stratified by data centre)
 - [x] Real BGC chlorophyll from adjusted fields (16 floats, 343 profiles)
 - [x] Real current vectors from Copernicus Marine GLORYS12V1 (6/8 model frames real, 41×36×24 grid; the 2 newest fall past GLORYS's own coverage and state their offset like every other source that lags)
-- [ ] Real NetCDF/OPeNDAP model fields — blocks everything in the hazard section
+- [ ] Real NetCDF/OPeNDAP model fields: blocks everything in the hazard section
 - [ ] Glider feed (data exists, no temporal overlap and no QC flags; see above)
 - [ ] RAMA mooring feed (sites in domain; PMEL redirects to an unreachable mirror)
 - [ ] CTD feed (reference dataset requires credentials)
@@ -1933,16 +1937,16 @@ data that was stale, unadjusted, or quality-flagged.
 
 ---
 
-## 👤 Author
+## Author
 
 **Siddharth R**
 - GitHub: [@siddharthr21](https://github.com/siddharthr21)
 
-Built for INCOIS — Indian National Centre for Ocean Information Services.
+Built for INCOIS: Indian National Centre for Ocean Information Services.
 
 ---
 
-## 📄 License
+## License
 
 This project is open source. See [LICENSE](LICENSE) for details.
 
@@ -1950,6 +1954,6 @@ This project is open source. See [LICENSE](LICENSE) for details.
 
 <div align="center">
 
-Made with 🌊 for the Indian Ocean
+Made for the Indian Ocean
 
 </div>
