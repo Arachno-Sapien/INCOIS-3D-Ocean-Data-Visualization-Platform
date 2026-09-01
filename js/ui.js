@@ -44,6 +44,7 @@ export function initUI(onCanvasClick) {
   _wireTimeline();
   _wireProfilePanel();
   _wireResizeAmbient();
+  _observeLegendHeight();
 
   // Canvas click. On the globe this is region/instrument selection; in the
   // volume it opens a profile. Picking an instrument does both: dive in, then
@@ -154,6 +155,7 @@ function _cacheDOM() {
 
     // Colorbar canvas
     colorbarCanvas:   g('colorbar-canvas'),
+    colorbarLegend:   g('colorbar-legend'),
 
     // Depth gauge
     depthGauge:       g('depth-gauge-canvas'),
@@ -1517,4 +1519,31 @@ function _wireResizeAmbient() {
   }
   mq.addEventListener('change', handleMQ);
   handleMQ(mq);
+}
+
+/**
+ * Publishes #colorbar-legend's real rendered height as --legend-h, so
+ * #layers-panel (index.html) can reserve exactly enough room to clear it.
+ *
+ * The legend sits directly below the layers panel and is itself a second
+ * independent fixed-position box, not a sibling inside the panel — so
+ * nothing about the panel's own layout knows it is there, the same problem
+ * the depth gauge is to the console panel. The gauge is a fixed 130/100px
+ * and that number can just live in CSS. The legend cannot: it grows from
+ * ~70px (a bare colorbar) to 270px+ (the Cyclone Mocha case study, TCHP
+ * layer on, both the vector key and the TCHP readout showing several lines
+ * each) depending on which variable and layers are active. A single CSS
+ * guess is either wasteful the rest of the time or wrong at the one moment
+ * it matters — the previous fix here guessed 0 and the layers panel ran
+ * straight through it. ResizeObserver reports the actual box on every
+ * change, whatever caused it, so nothing has to enumerate the ways this
+ * text can grow and keep that list in sync by hand.
+ */
+function _observeLegendHeight() {
+  const el = DOM.colorbarLegend;
+  if (!el || typeof ResizeObserver === 'undefined') return;
+  const publish = () =>
+    document.documentElement.style.setProperty('--legend-h', `${el.getBoundingClientRect().height}px`);
+  new ResizeObserver(publish).observe(el);
+  publish();
 }
