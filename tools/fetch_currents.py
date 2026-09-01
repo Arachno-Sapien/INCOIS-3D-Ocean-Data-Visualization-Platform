@@ -89,9 +89,20 @@ def load_model_doc(path):
         return json.load(f)
 
 
-def open_source(lons, lats, depths):
-    """Lazy xarray Dataset over the padded domain, uo/vo only."""
+def open_source(lons, lats, depths, times):
+    """Lazy xarray Dataset over the padded domain and dates, uo/vo only.
+
+    Bounding start/end_datetime matters as much as the spatial box: without
+    it, open_dataset indexes the full 1993-present daily archive (~12,000
+    timesteps) before a single per-date .sel() can run against it, which was
+    observed to hang for 20+ minutes on nothing. A one-day pad either side
+    covers TIME_TOLERANCE_DAYS at the window's own edges.
+    """
     import copernicusmarine
+    import pandas as pd
+
+    t0 = pd.Timestamp(times[0]).tz_localize(None) - pd.Timedelta(days=TIME_TOLERANCE_DAYS)
+    t1 = pd.Timestamp(times[-1]).tz_localize(None) + pd.Timedelta(days=TIME_TOLERANCE_DAYS)
 
     try:
         return copernicusmarine.open_dataset(
@@ -103,6 +114,8 @@ def open_source(lons, lats, depths):
             maximum_latitude=max(lats) + SPACE_PAD_DEG,
             minimum_depth=0.0,
             maximum_depth=max(depths) + DEPTH_PAD_M,
+            start_datetime=t0,
+            end_datetime=t1,
         )
     except Exception as e:  # copernicusmarine raises its own auth exceptions
         name = type(e).__name__
@@ -121,8 +134,11 @@ def fetch_frame(src, lons, lats, depths, iso_time, rejected):
     import pandas as pd
 
     try:
+        # GLORYS's time axis is tz-naive (datetime64[ns]); a tz-aware Timestamp
+        # from the 'Z'-suffixed ISO string fails to compare against it at all
+        # rather than just landing on the wrong side of midnight.
         at_time = src.sel(
-            time=pd.Timestamp(iso_time),
+            time=pd.Timestamp(iso_time).tz_localize(None),
             method="nearest",
             tolerance=pd.Timedelta(days=TIME_TOLERANCE_DAYS),
         )
@@ -166,6 +182,11 @@ def fetch_frame(src, lons, lats, depths, iso_time, rejected):
 
 def check(path):
     """Assertions over the written file, mirroring tools/fetch_model.py --check."""
+    if not os.path.exists(path):
+        sys.exit(
+            f"{path} does not exist. Run tools/fetch_currents.py (without "
+            "--check) first."
+        )
     with open(path, encoding="utf-8") as f:
         doc = json.load(f)
 
@@ -227,7 +248,7 @@ def main():
           f"({times[0][:10]} to {times[-1][:10]})")
 
     print(f"Opening {DATASET_ID} (Copernicus Marine)...")
-    src = open_source(lons, lats, depths)
+    src = open_source(lons, lats, depths, times)
 
     rejected = {"null_land_or_nodata": 0, "out_of_range": 0}
     speed_frames, u_frames, v_frames = [], [], []

@@ -459,7 +459,12 @@ export const VARIABLE_META = {
  * }
  */
 export async function getModelField(variable, date, timestep) {
-  await _modelReady;
+  // Await the readiness promise for the document this variable actually
+  // reads. Awaiting only _modelReady meant a currents request that landed
+  // before currents.json's fetch resolved found _currentsDoc still null,
+  // silently took the synthetic branch, and nothing re-rendered once the
+  // real data did arrive a moment later.
+  await (variable === 'currents' ? _currentsReady : _modelReady);
   const real = _realModelField(variable, date, timestep);
   if (real) return real;
   // ── REAL API SWAP: replace body with fetch() call ──
