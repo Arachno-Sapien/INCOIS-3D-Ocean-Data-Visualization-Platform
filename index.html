@@ -88,6 +88,12 @@
       --panel-w: 264px;
       --topbar-h: 54px;
       --bottombar-h: 72px;
+      /* The depth gauge is a fixed-position overlay, not part of any panel's
+         own box, so nothing lays out around it automatically. Its size is a
+         variable (not just its own literal) so the console panel below can
+         reserve exactly this much clearance and the two never fight over the
+         same pixels — see #controls-panel .panel-body. */
+      --gauge-h: 130px;
 
       /* Radius scale: containers soft, inner controls tight, pills full.
          One documented rule, applied everywhere. */
@@ -406,17 +412,71 @@
        composition and the thing that makes the layout read as templated. */
 
     /* ── Console — left, primary ── */
+    /* The depth gauge is a fixed overlay at the same left edge, not a sibling
+       in this panel's own box, so nothing about the panel's size knows it
+       exists by default. The first attempt at this fix computed a max-height
+       for .panel-body top-down from 100vh, subtracting the gauge's footprint
+       — but that calculation also has to know this panel's own top offset
+       and its header's rendered height, and it did not, so a header's worth
+       of pixels (~40px) still scrolled under the gauge on a narrower window.
+       Pinning `bottom` here instead sidesteps that entirely: the panel's own
+       box now physically cannot extend past this line, so .panel-body's
+       `flex: 1; min-height: 0` below only ever has genuinely free space to
+       grow into, whatever the header turns out to measure. */
     #controls-panel {
       top: calc(var(--topbar-h) + 12px);
+      bottom: calc(var(--bottombar-h) + var(--gauge-h) + 24px);
       left: 16px;
       width: var(--panel-w);
+      display: flex;
+      flex-direction: column;
+    }
+
+    #controls-panel .panel-body {
+      flex: 1;
+      min-height: 0;   /* let it shrink and scroll instead of overflowing the pinned box */
+    }
+
+    /* Collapsed, .panel-body is display:none and there is nothing to reserve
+       clearance for, so the pinned `bottom` above would otherwise leave a
+       tall empty box below the header instead of the panel shrinking to it,
+       as every other panel already does when collapsed. */
+    #controls-panel.collapsed {
+      bottom: auto;
     }
 
     /* ── Layer rail — right, secondary and offset ── */
+    /* Same fix as #controls-panel above, for the same underlying reason: it
+       shared the generic .panel-body max-height guess, which forgot this
+       panel's own 74px top offset and its header's rendered height, so on a
+       short viewport its last rows scrolled under the bottom timeline bar.
+       Pinning `bottom` fixes that part the same structural way.
+       But this panel has a SECOND fixed-position box stacked directly below
+       it — #colorbar-legend, "bottom-right above timeline" — that a first
+       pass at this fix missed entirely, because unlike the gauge its height
+       is not constant: it runs 70-270px depending on the active variable
+       and which derived layers are on. --legend-h is published live by
+       _observeLegendHeight() in ui.js (a ResizeObserver on the legend
+       itself), so this reserves exactly what is actually there rather than
+       a number that is wrong the moment the legend's content changes. The
+       24px is the legend's own 14px gap above the bottom bar plus a 10px
+       gap above the legend, so the three boxes stack without touching. */
     #layers-panel {
       top: calc(var(--topbar-h) + 74px);
+      bottom: calc(var(--bottombar-h) + var(--legend-h, 90px) + 24px);
       right: 16px;
       width: 208px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #layers-panel .panel-body {
+      flex: 1;
+      min-height: 0;
+    }
+
+    #layers-panel.collapsed {
+      bottom: auto;
     }
 
     #layers-panel .panel-header {
@@ -972,7 +1032,7 @@
       position: fixed;
       bottom: calc(var(--bottombar-h) + 10px);
       left: 14px;
-      width: 130px; height: 130px;
+      width: var(--gauge-h); height: var(--gauge-h);
       z-index: 50;
     }
 
@@ -1271,20 +1331,22 @@
     @media (max-width: 768px) {
       :root {
         --panel-w: calc(100vw - 28px);
+        --gauge-h: 100px;
       }
 
       #controls-panel, #layers-panel {
         width: var(--panel-w) !important;
       }
 
-      #layers-panel { right: 14px; top: auto; bottom: calc(var(--bottombar-h) + 10px); }
+      /* Same --legend-h clearance as the desktop rule above -- this only
+         overrides `right`/`top`/`bottom` for the narrow layout, and forgetting
+         the legend here would silently undo that fix under 768px. */
+      #layers-panel { right: 14px; top: auto; bottom: calc(var(--bottombar-h) + var(--legend-h, 90px) + 24px); }
 
       #profile-panel {
         right: 14px;
         width: calc(100vw - 28px);
       }
-
-      #depth-gauge-wrap { width: 100px; height: 100px; }
 
       .brand-sub { display: none; }
 
