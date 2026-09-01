@@ -69,6 +69,9 @@
       --data-ctd:     #2dd4bf;
       --data-bgc:     #fb923c;
       --data-mooring: #f472b6;
+      /* Not a hue: the storm track is an annotation drawn over the heat field,
+         and every value it crosses on the thermal ramp is warm. */
+      --data-cyclone: #f1f5f9;
       --warning:      #ff8a5c;
 
       /* Panels sit in the water column, not on frosted glass */
@@ -887,6 +890,24 @@
     }
     #tchp-key.hidden { display: none; }
     #tchp-key b { color: var(--warning); font-weight: 600; }
+    /* The lead-framed readout: what the storm is about to cross, which is the
+       one number in this panel that is a forecast input rather than a state. */
+    #tchp-key .tk-lead {
+      display: block; margin-top: 5px; padding-top: 5px;
+      border-top: 1px dashed var(--hairline);
+      color: var(--text-primary);
+    }
+    #tchp-key .tk-lead .tk-above { color: var(--warning); font-weight: 600; }
+    #tchp-key .tk-lead .tk-below { color: var(--lumen); font-weight: 600; }
+    #tchp-key .tk-caveat { color: var(--text-muted); }
+
+    /* Case study, active */
+    #case-readout.is-case { color: var(--warning); }
+    #case-toggle.active {
+      background: rgba(255, 138, 92, 0.14);
+      border-color: var(--warning);
+      color: var(--warning);
+    }
     #vector-key .vk-arrow { color: var(--lumen); letter-spacing: -0.05em; }
 
     /* Advisory text under a control */
@@ -1380,6 +1401,19 @@
         <button class="scale-btn" id="iso-toggle" type="button">Show</button>
       </div>
       <p class="ctrl-note" id="iso-note"></p>
+    </div>
+
+    <!-- Case study -->
+    <div class="ctrl-group">
+      <label class="ctrl-label">
+        Case study
+        <span class="ctrl-readout" id="case-readout">Live · 2026</span>
+      </label>
+      <button class="scale-btn" id="case-toggle" type="button"
+              title="Load the Cyclone Mocha snapshot: the May 2023 INCOIS field, the IBTrACS best track and the Argo profiles nearest it. The live 2026 view is untouched.">
+        Cyclone Mocha 2023
+      </button>
+      <p class="ctrl-note" id="case-note"></p>
     </div>
 
     <!-- Palette -->

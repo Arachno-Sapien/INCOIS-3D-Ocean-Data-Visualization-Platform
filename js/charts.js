@@ -6,14 +6,14 @@
  * Designed to accept multiple variables and render a toggle inside the chart.
  */
 
-import { VARIABLE_META } from './dataService.js';
+import { VARIABLE_META, isModelVariableReal } from './dataService.js';
 import { valueToColor, clamp, lerp, DIVERGING_PALETTES } from './utils.js';
 
 /**
  * Draw a depth-profile chart onto a canvas element.
  *
  * @param {HTMLCanvasElement} canvas
- * @param {Object} profileData  — getProfile() response
+ * @param {Object} profileData  — getProfile() response (with optional modelColumn)
  * @param {string} activeVar    — 'temperature' | 'salinity' | 'chlorophyll'
  * @param {Object} opts
  */
@@ -39,6 +39,11 @@ export function drawProfileChart(canvas, profileData, activeVar = 'temperature',
 
   const data = variables[activeVar];
   const valid = data ? data.filter(v => v !== null && Number.isFinite(v)) : [];
+
+  // Check for co-located model column
+  const hasModel = isModelVariableReal(activeVar) && profileData.modelColumn?.variables?.[activeVar];
+  const modelData = hasModel ? profileData.modelColumn.variables[activeVar] : null;
+  const modelDepths = profileData.modelColumn?.depths || [];
 
   if (!valid.length) {
     ctx.fillStyle = 'rgba(255,138,92,0.9)';
@@ -67,11 +72,28 @@ export function drawProfileChart(canvas, profileData, activeVar = 'temperature',
   }
 
   const meta = VARIABLE_META[activeVar] || { label: activeVar, unit: '', defaultMin: 0, defaultMax: 1 };
+  // Max depth comes strictly from the observed profile so shallow profiles
+  // (e.g. 200 m glider dive) are not squashed into the top tenth by a 2000 m model column.
   const maxD = Math.max(...depths);
-  // Range over valid levels only. Math.min over an array holding null coerces
-  // it to 0, which would scale the axis to a salinity the ocean never has.
-  const minV = Math.min(...valid) * 0.97;
-  const maxV = Math.max(...valid) * 1.03;
+
+  // Filter model levels to <= maxD
+  const modelValid = [];
+  const modelPoints = [];
+  if (hasModel && modelData) {
+    for (let i = 0; i < modelDepths.length; i++) {
+      if (modelDepths[i] > maxD) break;
+      const val = modelData[i];
+      if (val !== null && Number.isFinite(val)) {
+        modelValid.push(val);
+        modelPoints.push({ d: modelDepths[i], v: val });
+      }
+    }
+  }
+
+  // Range over all valid levels (observed + model) so neither line clips
+  const allValid = modelValid.length ? [...valid, ...modelValid] : valid;
+  const minV = Math.min(...allValid) * 0.97;
+  const maxV = Math.max(...allValid) * 1.03;
 
   function xPos(v) { return pad.left + ((v - minV) / (maxV - minV)) * plotW; }
   function yPos(d) { return pad.top  + (d / maxD) * plotH; }
@@ -108,7 +130,13 @@ export function drawProfileChart(canvas, profileData, activeVar = 'temperature',
                  pad.left - 6, y + 3);
   }
 
-  // ── Gradient fill under line ──
+  // ── Clip plot area so no curve overflows into labels or chrome ──
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(pad.left, pad.top, plotW, plotH);
+  ctx.clip();
+
+  // ── Gradient fill under observed line ──
   const lineColor = _varColor(activeVar);
   const grad = ctx.createLinearGradient(pad.left, 0, pad.left + plotW, 0);
   grad.addColorStop(0,   lineColor + '10');
@@ -162,11 +190,53 @@ export function drawProfileChart(canvas, profileData, activeVar = 'temperature',
     ctx.fill();
   }
 
-  // ── Axis labels ──
+  // ── Co-located model profile overlay (dashed line) ──
+  if (modelPoints.length > 1) {
+    ctx.save();
+    ctx.setLineDash([4, 3]);
+    ctx.strokeStyle = 'rgba(223, 240, 239, 0.85)';
+    ctx.lineWidth = 1.8;
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(xPos(modelPoints[0].v), yPos(modelPoints[0].d));
+    for (let i = 1; i < modelPoints.length; i++) {
+      ctx.lineTo(xPos(modelPoints[i].v), yPos(modelPoints[i].d));
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  ctx.restore(); // End clip
+
+  // ── Axis labels & Legend ──
   ctx.fillStyle = 'rgba(99,230,190,0.75)';
   ctx.font = '10px Geist, system-ui, sans-serif';
   ctx.textAlign = 'left';
   ctx.fillText(`${meta.label} (${meta.unit})`, pad.left, pad.top - 10);
+
+  // Series legend when model overlay is present
+  if (modelPoints.length > 1) {
+    ctx.font = '8.5px Geist, system-ui, sans-serif';
+
+    // Observed
+    ctx.fillStyle = lineColor;
+    ctx.fillRect(W - pad.right - 96, pad.top - 14, 8, 2.5);
+    ctx.fillStyle = 'rgba(223,240,239,0.75)';
+    ctx.fillText('Obs', W - pad.right - 84, pad.top - 10);
+
+    // Model
+    ctx.save();
+    ctx.setLineDash([3, 2]);
+    ctx.strokeStyle = 'rgba(223, 240, 239, 0.85)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(W - pad.right - 58, pad.top - 13);
+    ctx.lineTo(W - pad.right - 48, pad.top - 13);
+    ctx.stroke();
+    ctx.restore();
+    ctx.fillStyle = 'rgba(223,240,239,0.75)';
+    ctx.fillText('Model', W - pad.right - 44, pad.top - 10);
+  }
 
   ctx.save();
   ctx.translate(12, pad.top + plotH / 2);

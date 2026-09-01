@@ -419,7 +419,50 @@ def build(rows, idx):
     return out, dict(rejected)
 
 
+def check(path):
+    """Assertions over the written file: cheap, offline, and load-bearing."""
+    with open(path, encoding="utf-8") as f:
+        doc = json.load(f)
+
+    assert "floats" in doc and len(doc["floats"]) >= 1, "no core floats in argo.json"
+    assert "bgcFloats" in doc, "bgcFloats key missing"
+    assert doc["domain"]["lonMin"] == LON_MIN and doc["domain"]["lonMax"] == LON_MAX
+    assert doc["domain"]["latMin"] == LAT_MIN and doc["domain"]["latMax"] == LAT_MAX
+
+    n_core_prof = 0
+    for f in doc["floats"]:
+        assert "wmo" in f and "cycles" in f, "malformed float entry"
+        for c in f["cycles"]:
+            n_core_prof += 1
+            pres, temp, psal = c["pres"], c["temp"], c["psal"]
+            assert len(pres) == len(temp) == len(psal), f"ragged arrays on WMO {f['wmo']} cycle {c.get('cycle')}"
+            assert pres == sorted(pres), f"pressure not ascending on WMO {f['wmo']} cycle {c.get('cycle')}"
+            assert all(TEMP_RANGE[0] <= v <= TEMP_RANGE[1] for v in temp if v is not None), f"temperature out of range on WMO {f['wmo']}"
+            assert all(PSAL_RANGE[0] <= v <= PSAL_RANGE[1] for v in psal if v is not None), f"salinity out of range on WMO {f['wmo']}"
+            assert LAT_MIN <= c["lat"] <= LAT_MAX, f"latitude out of bounds: {c['lat']}"
+            assert LON_MIN <= c["lon"] <= LON_MAX, f"longitude out of bounds: {c['lon']}"
+            valid_t = [v for v in temp if v is not None]
+            if len(valid_t) > 1 and pres[-1] - pres[0] > 300:
+                assert valid_t[0] > valid_t[-1], f"inverted temperature profile on WMO {f['wmo']}"
+
+    n_bgc_prof = 0
+    for f in doc.get("bgcFloats", []):
+        for c in f["cycles"]:
+            n_bgc_prof += 1
+            pres, chla = c["pres"], c["chla"]
+            assert len(pres) == len(chla), f"ragged BGC arrays on WMO {f['wmo']}"
+            assert pres == sorted(pres), f"BGC pressure not ascending on WMO {f['wmo']}"
+            assert all(-0.1 <= v <= 20.0 for v in chla if v is not None), f"chlorophyll out of range on WMO {f['wmo']}"
+
+    print(f"OK  {os.path.basename(path)}  {len(doc['floats'])} core floats ({n_core_prof} profiles), "
+          f"{len(doc.get('bgcFloats', []))} BGC floats ({n_bgc_prof} profiles)")
+    print(f"    QC kept flags {doc['qc']['keptFlags']}, timeRange {doc['timeRange'][0]} to {doc['timeRange'][1]}")
+
+
 def main():
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    dest = os.path.join(here, "js", "data", "argo.json")
+
     d_start, d_end = default_window()
     ap = argparse.ArgumentParser()
     ap.add_argument("--start", default=d_start)
@@ -427,7 +470,12 @@ def main():
     ap.add_argument("--max-floats", type=int, default=16)
     ap.add_argument("--max-levels", type=int, default=140,
                     help="thin each profile to at most this many levels (no interpolation)")
+    ap.add_argument("--check", action="store_true", help="verify the written file and exit")
     args = ap.parse_args()
+
+    if args.check:
+        check(dest)
+        return
 
     rows, idx = fetch(args.start, args.end)
     profiles, rejected = build(rows, idx)

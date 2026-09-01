@@ -8,12 +8,15 @@
 
 import State from './state.js';
 import { PLUGIN_REGISTRY, VARIABLE_META, getProfile, getDataProvenance,
-         getObservationWindow, getModelFrames, getModelLevels } from './dataService.js';
+         getObservationWindow, getModelFrames, getModelLevels,
+         setCaseStudy, getCaseStudy, isCaseStudy, sampleModelColumn } from './dataService.js';
 import { drawProfileChart, drawColorbar, drawDepthGauge } from './charts.js';
 import { beginAreaDrag, updateAreaDrag, endAreaDrag, cancelAreaDrag,
-         clearAreaSelection, rebuildForBounds, captureFrame } from './scene.js';
+         clearAreaSelection, rebuildForBounds, captureFrame,
+         refreshMarkers } from './scene.js';
 import { formatDate, DIVERGING_PALETTES } from './utils.js';
-import { DOMAIN, VIEW, isSubRegion } from './constants.js';
+import { DOMAIN, VIEW, isSubRegion, setViewBounds, resetViewBounds,
+         TCHP_THRESHOLD, D26_THRESHOLD } from './constants.js';
 
 // Keep references to key DOM elements after init
 const DOM = {};
@@ -65,6 +68,7 @@ export function initUI(onCanvasClick) {
   _wireViewMode();
   _wireAreaSelection();
   _wireIsosurface();
+  _wireCaseStudy();
   _wireExport();
   _renderProvenanceBadge();
 
@@ -91,6 +95,15 @@ export function initUI(onCanvasClick) {
   State.subscribe('profilePanelOpen',   v  => { DOM.profilePanel.classList.toggle('hidden', !v); });
   State.subscribe('controlsPanelOpen',  v  => { DOM.controlsPanel.classList.toggle('collapsed', !v); });
   State.subscribe('layersPanelOpen',    v  => { DOM.layersPanel.classList.toggle('collapsed', !v); });
+
+  const _refreshOpenProfile = () => {
+    if (State.get('profilePanelOpen')) {
+      const plat = State.get('selectedPlatform');
+      if (plat) _openProfilePanel(plat);
+    }
+  };
+  State.subscribe('selectedDate', _refreshOpenProfile);
+  State.subscribe('selectedTimestep', _refreshOpenProfile);
 }
 
 // ---------------------------------------------------------------------------
@@ -302,7 +315,7 @@ function _wireControls() {
  * Read from the data rather than hardcoded, so re-running tools/fetch_argo.py
  * with a different window moves this automatically.
  */
-async function _constrainDateToObservations() {
+async function _constrainDateToObservations(preferred) {
   const win = await getObservationWindow();
   if (!win) {
     _obsNote = '';
@@ -319,11 +332,15 @@ async function _constrainDateToObservations() {
   // now and the analysis runs about a month behind the floats, so opening on
   // the last observation date would put a month-stale field under fresh
   // observations — the exact mismatch the offset readout exists to expose.
+  //
+  // `preferred` overrides that for the case study, which opens on the date the
+  // storm began its run rather than on the newest frame in the snapshot.
   const current = State.get('selectedDate');
   const frames = getModelFrames() || [];
   const usable = frames.map(t => t.slice(0, 10)).filter(d => d >= start && d <= end);
-  const open = usable.length ? usable[usable.length - 1]
-             : (current < start || current > end ? end : null);
+  const newest = usable.length ? usable[usable.length - 1]
+               : (current < start || current > end ? end : null);
+  const open = preferred && preferred >= start && preferred <= end ? preferred : newest;
   DOM.dateInput.value = open || current;
   // Only when it actually moves: State.set notifies regardless, and the
   // 'selectedDate' subscribers rebuild the whole field and every marker.
@@ -441,7 +458,18 @@ async function _exportPNG() {
 
   // Tall enough for the lowest baseline: y0 is frame.height + 26 and the
   // instrument-window line sits at y0 + 98, so anything under ~136 clips it.
-  const STRIP = 138;
+  //
+  // The case study adds a header, a statistics line and the caveat. The caveat
+  // is a sentence rather than a field and does not fit on one line at any
+  // sensible export width, so it is wrapped and the strip is sized from the
+  // result — a fixed height silently truncated it off the right edge, which on
+  // the one line that says "this is not a forecast" is the worst place to lose
+  // text.
+  const cs = getCaseStudy();
+  const measure = document.createElement('canvas').getContext('2d');
+  measure.font = "10px 'IBM Plex Mono', monospace";
+  const caveatLines = cs ? _wrapText(measure, cs.analysis.caveat, frame.width - 48) : [];
+  const STRIP = cs ? 184 + 14 * (caveatLines.length - 1) : 138;
   const out = document.createElement('canvas');
   out.width = frame.width;
   out.height = frame.height + STRIP;
@@ -539,6 +567,33 @@ async function _exportPNG() {
   c.fillText(new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC', R, y0 + 82);
   c.textAlign = 'left';
 
+  // A case-study figure travels exactly as far as any other and must not be
+  // mistaken for the live basin. The claim and its caveat are burned in with
+  // it: an image showing a track over a heat field, with no statement of what
+  // that pairing does and does not support, is the failure this strip exists
+  // to prevent.
+  if (cs) {
+    const a = cs.analysis;
+    c.fillStyle = '#ff8a5c';
+    c.font = "11px 'IBM Plex Mono', monospace";
+    c.fillText(
+      `CASE STUDY ${cs.storm.name} ${cs.storm.season} (${cs.storm.source})`
+      + `   ·   peak ${cs.storm.peakWindKt} kt   ·   NOT the live 2026 view`,
+      L, y0 + 118);
+    c.fillStyle = 'rgba(223,240,239,0.62)';
+    c.font = "10px 'IBM Plex Mono', monospace";
+    const sign = v => `${v >= 0 ? '+' : ''}${v}`;
+    c.fillText(
+      `TCHP (${a.predictorFrame.slice(0, 10)}, pre-genesis) vs next ${a.leadHours} h: `
+      + `r ~${a.lead.r >= 0 ? '+' : ''}${a.lead.r.toFixed(1)} `
+      + `(${sign(a.lead.r)} by this file's pairing rule)   ·   `
+      + `>=${a.thresholdKJcm2}: ${sign(a.lead.above.meanDeltaKt)} kt   ·   `
+      + `<${a.thresholdKJcm2}: ${sign(a.lead.below.meanDeltaKt)} kt   ·   `
+      + `landfall-free r ${sign(a.leadOffshore.r)} n=${a.leadOffshore.n}`,
+      L, y0 + 134);
+    caveatLines.forEach((ln, i) => c.fillText(ln, L, y0 + 150 + 14 * i));
+  }
+
   const stamp = `${State.get('activeVariable')}_${State.get('selectedDate')}_${State.get('selectedTimestep').replace(':', '')}`;
   const a = document.createElement('a');
   a.href = out.toDataURL('image/png');
@@ -550,6 +605,23 @@ async function _exportPNG() {
     setTimeout(() => btn.classList.remove('done'), 1400);
   }
   return { width: out.width, height: out.height };
+}
+
+/**
+ * Greedy word wrap against the measured width of the font already set on `c`.
+ * A word longer than the line is left to overflow rather than hyphenated: that
+ * only happens to a URL, and a broken URL is worse than a wide one.
+ */
+function _wrapText(c, text, maxWidth) {
+  const lines = [];
+  let cur = '';
+  for (const w of String(text).split(/\s+/)) {
+    const next = cur ? `${cur} ${w}` : w;
+    if (cur && c.measureText(next).width > maxWidth) { lines.push(cur); cur = w; }
+    else cur = next;
+  }
+  if (cur) lines.push(cur);
+  return lines;
 }
 
 function _wireExport() {
@@ -567,6 +639,11 @@ function _wireExport() {
  * TCHP readout, with the operational threshold stated.
  * A number in kJ cm-2 means nothing to most viewers without the ~50-60 figure
  * associated with rapid intensification, so the scale carries it.
+ *
+ * With the case study loaded it also carries the lead-framed number, which is
+ * the one that means something: the heat the storm is about to cross, not the
+ * heat under it. See `_tchpLead` in js/scene.js for why those are different
+ * quantities and why only one of them separates anything.
  */
 function _updateTchpKey() {
   const el = document.getElementById('tchp-key');
@@ -574,10 +651,177 @@ function _updateTchpKey() {
   const t = State.get('tchpStats');
   const on = State.get('layers.tchp') !== false && t;
   el.classList.toggle('hidden', !on);
-  if (!on) return;
-  el.innerHTML =
+  // Emptied, not just hidden. Leaving the markup in place kept a case-study
+  // "water ahead" reading inside a hidden element after the snapshot had been
+  // swapped back out — invisible, but it is a stale claim sitting in the DOM.
+  if (!on) { el.innerHTML = ''; return; }
+
+  let html =
     `TCHP ${t.min.toFixed(0)}–${t.max.toFixed(0)} ${esc(t.unit)} · fixed 0–160 scale<br>` +
-    `<b>&ge;50</b> associated with rapid intensification`;
+    `<b>&ge;${Number(TCHP_THRESHOLD)}</b> associated with rapid intensification`;
+
+  const L = t.lead;
+  if (L && State.get('layers.cyclone') !== false) {
+    const off = _offsetParts(L.offsetMs);
+    const cls = L.above ? 'tk-above' : 'tk-below';
+    // Number(), not esc(): these come out of a fetched JSON document, and a
+    // number that is not one should read NaN rather than reach innerHTML as
+    // whatever it actually was.
+    const verdict = L.above
+      ? `above the ${Number(L.threshold)} threshold — favourable for intensification`
+      : `below the ${Number(L.threshold)} threshold — not favourable`;
+    html +=
+      `<span class="tk-lead">` +
+      `${esc(L.storm)} ${Number(L.windKt).toFixed(0)} kt at ${esc(L.fixTime.slice(0, 16).replace('T', ' '))}` +
+      `${off.txt === 'same day' ? '' : ` (${esc(off.txt)})`}<br>` +
+      `Water ahead, next ${Number(L.hours)} h: <span class="${cls}">${L.meanTchp.toFixed(0)} ${esc(t.unit)}</span> · ${verdict}<br>` +
+      // How many positions that mean is over, and how many could not be read.
+      // A mean over two of eight fixes is a different claim from one over eight.
+      `<span class="tk-caveat">mean of ${L.nSampled} fix${L.nSampled === 1 ? '' : 'es'} ahead` +
+      `${L.nMissing ? `, ${L.nMissing} outside the field` : ''}` +
+      `${L.frame ? ` · frame ${esc(L.frame.slice(0, 10))}` : ''}<br>` +
+      // The only other encoding on screen. Marker area is proportional to
+      // wind, which is the convention, but a size scale with nothing stating
+      // it is a quantity the viewer has to guess at.
+      `Track fix area ∝ wind speed.<br>` +
+      `Means, not steps: sub-threshold fixes did intensify.</span></span>`;
+  } else if (!L && t.favourable) {
+    const f = t.favourable;
+    const pct = Math.round(f.coverage * 100);
+    const of = f.ofWater ? 'of the water' : 'of the region';
+    const cls = pct > 0 ? 'tk-above' : 'tk-below';
+    html +=
+      `<span class="tk-lead">` +
+      `Favourable for intensification: <span class="${cls}">${pct}% ${esc(of)}</span><br>` +
+      `<span class="tk-caveat">TCHP &ge; ${Number(f.thresholdTchp)} ${esc(t.unit)} and D26 &ge; ${Number(f.thresholdD26)} m · ${f.nFavourable} of ${f.wet} ocean cells</span>` +
+      `</span>`;
+  }
+  el.innerHTML = html;
+}
+
+// The intensification corridor, not the whole track. Centred on 13°N 88°E,
+// where Mocha ran north from a depression to 145 kt, and carried far enough
+// north to show it cross onto the low-heat shelf water where it died. The
+// landfall tail reaches past the corner of the analysed domain and is left
+// off-view rather than drawn on the boundary.
+const MOCHA_VIEW = { lonMin: 81, lonMax: 95, latMin: 4, latMax: 22 };
+
+/**
+ * Cyclone Mocha, May 2023 — one control that swaps the whole snapshot.
+ *
+ * The live view is a rolling six months and has no cyclone in it: the 2026
+ * North Indian season has produced none at all, which is a fact about the
+ * basin rather than a gap in the pipeline. So the case study travels to a
+ * storm, and it travels as a *complete* snapshot — its own field frames, its
+ * own floats, its own date bounds — rather than as an overlay borrowing the
+ * live one's credibility. Everything the provenance badge and the export strip
+ * say re-reads from the swapped documents for exactly that reason.
+ */
+function _wireCaseStudy() {
+  const btn = document.getElementById('case-toggle');
+  const readout = document.getElementById('case-readout');
+  const note = document.getElementById('case-note');
+  if (!btn) return;
+
+  // Everything below is interpolated into innerHTML out of a fetched document.
+  // Strings go through esc(); numbers go through these two, so a value that is
+  // not a number reads NaN instead of arriving as markup.
+  const pct = v => (v == null ? '—' : `${v >= 0 ? '+' : ''}${Number(v).toFixed(1)}`);
+  const num = v => (v == null ? '—' : String(Number(v)));
+  // Two decimals, not one: a correlation rounded to +0.9 cannot be told from
+  // +0.85, and the difference between the full-track and landfall-free figures
+  // is the whole point of printing both.
+  const rho = v => (v == null ? '—' : `${v >= 0 ? '+' : ''}${Number(v).toFixed(2)}`);
+  // One decimal for the headline claim. The exact correlation moves with the
+  // 24 h pairing rule (0.87-0.91 across reasonable choices), so two decimals
+  // in the sentence a reader quotes would be a precision the method lacks.
+  const approxRho = v => (v == null ? '—' : `≈ ${v >= 0 ? '+' : ''}${Number(v).toFixed(1)}`);
+
+  const render = () => {
+    const cs = getCaseStudy();
+    btn.classList.toggle('active', !!cs);
+    readout.classList.toggle('is-case', !!cs);
+    if (!cs) {
+      readout.textContent = 'Live · 2026';
+      btn.textContent = 'Cyclone Mocha 2023';
+      note.innerHTML =
+        'Swaps the field and the floats for a May 2023 snapshot. ' +
+        'The live view is untouched.';
+      return;
+    }
+    const a = cs.analysis, s = cs.storm;
+    readout.textContent = `${esc(s.name)} · ${s.season}`;
+    btn.textContent = 'Back to live 2026';
+    // Both framings, because the negative one is what makes the positive one
+    // worth stating: the same field, the same threshold, the same storm.
+    note.innerHTML =
+      `${esc(s.name)}, peak ${num(s.peakWindKt)} kt. ` +
+      `TCHP under the storm at the moment it intensified separates nothing — ` +
+      `RI steps ${num(a.lag.riSteps.meanTchp)} vs ${num(a.lag.otherSteps.meanTchp)} kJ cm⁻², ` +
+      `and it peaked over ${num(a.peak.tchpPre)}.<br><br>` +
+      `Read <b>ahead</b> instead — pre-genesis TCHP against the next ` +
+      `${num(a.leadHours)} h — <b>r ${approxRho(a.lead.r)}</b> (n ${num(a.lead.n)}): ` +
+      `≥${num(a.thresholdKJcm2)} → ${pct(a.lead.above.meanDeltaKt)} kt (n ${num(a.lead.above.n)}), ` +
+      `&lt;${num(a.thresholdKJcm2)} → ${pct(a.lead.below.meanDeltaKt)} kt (n ${num(a.lead.below.n)}).<br><br>` +
+      `Excluding every ${num(a.leadHours)} h window within ` +
+      `${num(a.leadOffshore.minDist2LandKm)} km of land, so the landfall decay ` +
+      `cannot carry it: r ${rho(a.leadOffshore.r)} ` +
+      `(n ${num(a.leadOffshore.n)}), ${pct(a.leadOffshore.above.meanDeltaKt)} vs ` +
+      `${pct(a.leadOffshore.below.meanDeltaKt)} kt.<br><br>` +
+      // The exact figure depends on how the 24 h partner is picked, so the
+      // rule travels with it. Without that, a reader who recomputes with a
+      // slightly different window gets 0.87 and the headline looks inflated.
+      `<span class="tk-caveat">Quoted to one decimal because the exact value ` +
+      `depends on the pairing rule: ${rho(a.lead.r)} with ` +
+      `${esc(a.pairing?.rule || 'the nearest fix to t + 24 h')}, ` +
+      `${esc(a.pairing?.rSensitivityNote || '0.87-0.91 across reasonable pairing rules')}.` +
+      `</span><br><br>` +
+      `<span class="ctrl-note warn">${esc(a.caveat)}</span>`;
+  };
+
+  let busy = false;
+  btn.addEventListener('click', async () => {
+    if (busy) return;
+    busy = true;
+    btn.disabled = true;
+    try {
+      const entering = !isCaseStudy();
+      const cs = await setCaseStudy(entering);
+
+      // Temperature first: TCHP is only defined on it, and the case study
+      // opening on the salinity tab would show an empty heat layer.
+      State.set('activeVariable', 'temperature');
+      _syncColorbarInputsToVariable('temperature');
+      _updateTabBar();
+      State.set('layers.tchp', entering);
+      State.set('layers.cyclone', entering);
+
+      if (entering) setViewBounds(MOCHA_VIEW); else resetViewBounds();
+      // Re-bound the date control to the snapshot now in place, then open on
+      // the fix where the run to 145 kt began rather than on the newest frame.
+      await _constrainDateToObservations(entering ? cs.storm.focusDate : null);
+      await rebuildForBounds(true);
+      State.set('viewMode', 'volume');
+      await refreshMarkers();
+
+      // Both of these read the swapped documents, so neither may be left
+      // describing the snapshot that is no longer loaded.
+      await _renderProvenanceBadge();
+      _updateScaleBadge();
+      document.getElementById('area-reset-btn')
+        ?.classList.toggle('hidden', !isSubRegion());
+      render();
+    } catch (err) {
+      console.error('[INCOIS] Case study failed:', err);
+      note.innerHTML = `<span class="ctrl-note warn">Could not load the case ` +
+        `study: ${esc(err.message)}. Run tools/fetch_cyclone.py.</span>`;
+    } finally {
+      busy = false;
+      btn.disabled = false;
+    }
+  });
+
+  render();
 }
 
 /**
@@ -961,10 +1205,17 @@ function _wireProfilePanel() {
 }
 
 async function _openProfilePanel(platform) {
+  const regEntry = PLUGIN_REGISTRY.find(e => e.id === platform.type);
+
+  // Not every registry entry describes something with a water column. A storm
+  // track has no profile to draw, and opening a panel that offers a
+  // temperature profile of a cyclone would be inventing an observation. Driven
+  // off `profileVariables` rather than off the id, so a future non-profiling
+  // layer needs no edit here.
+  if (regEntry && !regEntry.profileVariables?.length) return;
+
   State.set('selectedPlatform', platform);
   State.set('profilePanelOpen', true);
-
-  const regEntry = PLUGIN_REGISTRY.find(e => e.id === platform.type);
 
   // Update header. The identifier is named for what it actually is: a WMO
   // number belongs to a float or a GTS buoy, but a glider carries a deployment
@@ -992,6 +1243,8 @@ async function _openProfilePanel(platform) {
   // The type matters: a float can be in both the core and BGC lists, and an
   // id alone would resolve to whichever source is checked first.
   const pd = await getProfile(platform.platformId, _selectedModelTimeISO(), platform.type);
+  // Co-located model column at the same geographic coordinate and timestamp
+  pd.modelColumn = sampleModelColumn(pd?.lat ?? platform.lat, pd?.lon ?? platform.lon, _selectedModelTimeISO());
   State.set('profileData', pd);
   _renderProfileMeta(platform, pd);
 
@@ -1055,6 +1308,13 @@ function _renderProfileMeta(platform, pd) {
     const { txt: base, cls } = _offsetParts(offset);
     const txt = base === 'same day' ? 'Same day as model frame' : `${base} model frame`;
     bits.push(`<span class="meta-item ${cls}" title="Offset between this profile and the selected model timestep"><i class="ph ph-arrows-left-right"></i>${esc(txt)}</span>`);
+  }
+
+  // Model column frame offset chip (stating the model timestamp offset)
+  if (pd?.modelColumn?.real) {
+    const mOff = _offsetParts(pd.modelColumn.offsetMs);
+    const mTxt = mOff.txt === 'same day' ? 'Model: same day' : `Model: ${mOff.txt}`;
+    bits.push(`<span class="meta-item is-real" title="Co-located grid cell from INCOIS VAM model analysis"><i class="ph ph-grid-four"></i>${esc(mTxt)}</span>`);
   }
 
   // The vertical coordinate is whichever the instrument actually reported.

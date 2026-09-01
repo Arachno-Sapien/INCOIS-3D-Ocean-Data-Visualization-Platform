@@ -173,3 +173,6 @@ temp_data/
 !js/data/argo.json
 !assets/*
 
+
+# Playwright MCP scratch output (screenshots, page snapshots)
+.playwright-mcp/

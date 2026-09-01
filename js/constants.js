@@ -89,4 +89,9 @@ export function isSubRegion() {
 /** Smallest selectable side, in degrees. Below this the box is unusable. */
 export const MIN_SELECTION_DEG = 1.5;
 
+/** Operational thresholds for tropical cyclone intensification */
+export const TCHP_THRESHOLD = 50;  // kJ cm⁻², energy threshold associated with rapid intensification
+export const D26_THRESHOLD = 50;   // m, minimum 26 °C isotherm depth for a sustained heat reservoir
+
 _recomputeSceneDims();
+

@@ -102,6 +102,94 @@ const _instReady = fetch('./js/data/instruments.json')
     return null;
   });
 
+// ---------------------------------------------------------------------------
+// Cyclone Mocha case study
+// ---------------------------------------------------------------------------
+// js/data/cyclone.json, from tools/fetch_cyclone.py. A SEPARATE snapshot, and
+// deliberately not merged into the live one: the app's window is Feb-Aug 2026,
+// which contains no North Indian cyclone at all — IBTrACS is current to
+// 2026-08-30 and the basin has produced nothing this season.
+//
+// The file carries its own `model` and `argo` blocks in exactly the schema of
+// model.json and argo.json, so entering the case study swaps documents rather
+// than adding a second way to read a field. Loaded on demand, never at boot:
+// the live view must not pay 1.3 MB for a case study nobody opened.
+let _caseDoc = null;            // the loaded cyclone.json, or null
+let _caseLive = null;           // the live docs, held while the case study is on
+let _caseReady = null;          // in-flight fetch, so a double click loads once
+
+/** True while the app is showing the case-study snapshot instead of the live one. */
+export function isCaseStudy() {
+  return !!_caseLive;
+}
+
+/** The storm, its track and the analysis — or null when the case study is off. */
+export function getCaseStudy() {
+  return _caseLive ? _caseDoc : null;
+}
+
+/**
+ * Swap the live snapshot for the case study, or back.
+ *
+ * The field cache is keyed by variable, frame index and bounds — none of which
+ * distinguish the two documents — so it has to be dropped on every swap or the
+ * 2023 view is served 2026 cells under a 2023 label.
+ */
+export async function setCaseStudy(on) {
+  if (on === isCaseStudy()) return _caseLive ? _caseDoc : null;
+  if (on) {
+    _caseReady = _caseReady || fetch('./js/data/cyclone.json')
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`cyclone.json ${r.status}`)));
+    _caseDoc = await _caseReady;
+    _caseLive = { model: _modelDoc, argo: _argoDoc };
+    _modelDoc = _caseDoc.model;
+    _argoDoc = _caseDoc.argo;
+  } else {
+    ({ model: _modelDoc, argo: _argoDoc } = _caseLive);
+    _caseLive = null;
+  }
+  _fieldCache.clear();
+  return _caseLive ? _caseDoc : null;
+}
+
+/**
+ * The storm as one platform, positioned at its fix nearest the selected frame.
+ *
+ * The marker moves with the date control rather than sitting at the peak, so
+ * the readout describing the water ahead describes the water ahead of where
+ * the storm actually was. `offsetMs` is carried for the same reason every
+ * other observation carries it.
+ */
+function _cyclonePlatform(atTime) {
+  if (!_caseLive || !_caseDoc?.track?.length) return null;
+  const s = _caseDoc.storm;
+  const track = _caseDoc.track;
+
+  let fix = track[0];
+  let offsetMs = null;
+  const t = Date.parse(atTime || '');
+  if (Number.isFinite(t)) {
+    fix = track.reduce((best, cur) =>
+      Math.abs(Date.parse(cur.time) - t) < Math.abs(Date.parse(best.time) - t) ? cur : best);
+    offsetMs = Date.parse(fix.time) - t;
+  }
+
+  return {
+    platformId: s.name,
+    type: 'cyclone',
+    real: true,
+    lat: fix.lat, lon: fix.lon,
+    lastUpdate: fix.time,
+    cycleCount: track.length,
+    offsetMs,
+    fix,
+    storm: s,
+    // Extra keys per point are ignored by the marker code, which reads lat/lon;
+    // the cyclone track builder reads windKt off the same objects.
+    track,
+  };
+}
+
 /** Which bundled group and source key each registry id reads from. */
 const INSTRUMENTS = {
   glider:  { group: 'gliders',  source: 'glider',  short: 'OceanGliders GDAC' },
@@ -464,6 +552,92 @@ function _cropAxis(centres, lo, hi) {
   return [i0, i1];
 }
 
+/**
+ * Sample the uncropped model column nearest a given geographic position (lat, lon)
+ * and time instant.
+ *
+ * Samples the uncropped _modelDoc so that platforms outside a dragged area
+ * selection still sample the real field. Returns the vertical profile across
+ * available real model variables (temperature and salinity), with depth in metres.
+ *
+ * @param {number} lat - Latitude in degrees
+ * @param {number} lon - Longitude in degrees
+ * @param {string} [atTime] - ISO 8601 timestamp string
+ * @returns {object|null} Model profile column or null if unavailable / on land
+ */
+export function sampleModelColumn(lat, lon, atTime) {
+  const doc = _modelDoc;
+  if (!doc || !doc.variables) return null;
+
+  const lons = doc.lons, lats = doc.lats;
+  if (!lons?.length || !lats?.length) return null;
+
+  const dLon = lons.length > 1 ? lons[1] - lons[0] : 1;
+  const dLat = lats.length > 1 ? lats[1] - lats[0] : 1;
+  if (lon < lons[0] - dLon / 2 || lon > lons[lons.length - 1] + dLon / 2) return null;
+  if (lat < lats[0] - dLat / 2 || lat > lats[lats.length - 1] + dLat / 2) return null;
+
+  let ix = 0, iy = 0;
+  for (let i = 1; i < lons.length; i++) {
+    if (Math.abs(lons[i] - lon) < Math.abs(lons[ix] - lon)) ix = i;
+  }
+  for (let i = 1; i < lats.length; i++) {
+    if (Math.abs(lats[i] - lat) < Math.abs(lats[iy] - lat)) iy = i;
+  }
+
+  const wanted = atTime ? Date.parse(atTime) : NaN;
+  let fi = 0;
+  if (Number.isFinite(wanted)) {
+    doc.times.forEach((t, i) => {
+      if (Math.abs(Date.parse(t) - wanted) < Math.abs(Date.parse(doc.times[fi]) - wanted)) fi = i;
+    });
+  }
+
+  const sw = doc.grid.nx, sh = doc.grid.ny, nz = doc.depths.length;
+  const colIndex = iy * sw + ix;
+
+  const variables = {};
+  let anyValid = false;
+
+  for (const [varName, v] of Object.entries(doc.variables)) {
+    let frameIdx = fi;
+    if (!v.frames[frameIdx]) {
+      const ok = v.frames.map((f, i) => (f ? i : -1)).filter(i => i >= 0);
+      if (!ok.length) continue;
+      frameIdx = ok.reduce((a, b) =>
+        Math.abs(Date.parse(doc.times[b]) - wanted) <
+        Math.abs(Date.parse(doc.times[a]) - wanted) ? b : a
+      );
+    }
+    const src = v.frames[frameIdx];
+    if (!src) continue;
+
+    const colVals = [];
+    for (let iz = 0; iz < nz; iz++) {
+      const val = src[iz * sh * sw + colIndex];
+      const num = val === null || !Number.isFinite(val) ? null : val;
+      colVals.push(num);
+      if (num !== null) anyValid = true;
+    }
+    variables[varName] = colVals;
+  }
+
+  if (!anyValid) return null;
+
+  return {
+    real: true,
+    gridLat: lats[iy],
+    gridLon: lons[ix],
+    depths: doc.depths.slice(),
+    time: doc.times[fi],
+    offsetMs: Number.isFinite(wanted) ? Date.parse(doc.times[fi]) - wanted : 0,
+    variables,
+    source: doc.source,
+    attribution: doc.attribution,
+  };
+}
+
+
 // ---------------------------------------------------------------------------
 // Instrument platform API
 // ---------------------------------------------------------------------------
@@ -698,6 +872,33 @@ export const PLUGIN_REGISTRY = [
       return _realInstPlatforms('mooring') || _mockMooringPlatforms(atTime);
     },
   },
+  {
+    id: 'cyclone',
+    label: 'Cyclone Track',
+    // Not a platform identifier at all: IBTrACS names storms, and the serial
+    // is in the panel rather than pretending to be a registration number.
+    idLabel: 'Storm',
+    // White, not another data colour. The track is an annotation over the heat
+    // field, and every part of the thermal ramp it crosses is warm — a red or
+    // orange track would vanish into exactly the values it is there to mark.
+    markerColor: '#f1f5f9',
+    glowColor:   '#f1f5f988',
+    // A storm has no water column. Left empty on purpose: ui.js reads this to
+    // decide whether a marker opens a profile at all, so the alternative is a
+    // panel offering a temperature profile of a hurricane.
+    profileVariables: [],
+    // A cyclone genuinely does travel a continuous path between three-hourly
+    // fixes, so a spline is the honest shape here — the same reasoning that
+    // gives a glider one and denies a drifting float one. Fixes are drawn
+    // scaled by wind speed on top of it.
+    trackStyle: 'cyclone',
+    // Empty until the case study is entered; there is no cyclone in the live
+    // 2026 window to draw.
+    fetchFn: async (atTime) => {
+      const p = _cyclonePlatform(atTime);
+      return p ? [p] : [];
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -843,7 +1044,13 @@ function _realArgoPlatforms() {
 
 /** Real BGC floats. Same platform contract, distinguished by `type`. */
 function _realBgcPlatforms() {
-  if (!_argoDoc?.bgcFloats?.length) return null;
+  // `null` means no snapshot loaded, and only that: the registry reads it as
+  // permission to generate. A loaded snapshot holding no BGC floats is an
+  // answer — there were none — and returns an empty list so the layer renders
+  // as absent. Conflating the two put six generated floats on screen under a
+  // provenance strip that had already gone green for the real ones beside them.
+  if (!_argoDoc) return null;
+  if (!_argoDoc.bgcFloats?.length) return [];
   return _argoDoc.bgcFloats.map(f => {
     const last = f.cycles[f.cycles.length - 1];
     return {

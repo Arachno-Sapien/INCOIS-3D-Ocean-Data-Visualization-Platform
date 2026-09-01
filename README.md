@@ -70,7 +70,8 @@ SIH2026/
 │   │                         any of them to refresh that snapshot.
 │   ├── fetch_argo.py       ← Argo + BGC profiles, QC'd, with a basin census
 │   ├── fetch_model.py      ← INCOIS gridded T/S  (--check, --validate-d26)
-│   └── fetch_instruments.py ← Gliders, CTD casts, moorings  (--check)
+│   ├── fetch_instruments.py ← Gliders, CTD casts, moorings  (--check)
+│   └── fetch_cyclone.py    ← Cyclone Mocha case study, separate window (--check)
 │
 └── js/
     ├── main.js             ← App boot entry point (WebGL2 check → scene → UI)
@@ -86,7 +87,8 @@ SIH2026/
     └── data/
         ├── argo.json       ← Argo + BGC observations, QC'd (1.8 MB)
         ├── model.json      ← INCOIS gridded T/S, 8 frames × 24 levels (3.2 MB)
-        └── instruments.json ← Glider dives, CTD casts, mooring profiles (0.9 MB)
+        ├── instruments.json ← Glider dives, CTD casts, mooring profiles (0.9 MB)
+        └── cyclone.json    ← Mocha 2023: track, field, floats, analysis (1.3 MB)
 ```
 
 > **No `node_modules`, no `package.json`, no build step.** Three.js, fonts and
@@ -293,7 +295,12 @@ credential-free source for this basin.
 | **CTD casts** | NOAA OSMC ERDDAP · `osmc.noaa.gov` | `cchdo_ctd` (CCHDO / GO-SHIP) | `tools/fetch_instruments.py` |
 | **Moorings** | NOAA OSMC ERDDAP | `OSMCV4_DUO_PROFILES`, filtered to moored buoys | `tools/fetch_instruments.py` |
 | **Model field** (T, S) | INCOIS ERDDAP · `erddap.incois.gov.in` | `incois_argo_10d_VAM` | `tools/fetch_model.py` |
+| **Cyclone best track** | NOAA NCEI · `ncei.noaa.gov` | IBTrACS v04r01 (`last3years`) | `tools/fetch_cyclone.py` |
 | Currents, chlorophyll fields | — | — | still generated |
+
+The cyclone row is a **separate snapshot** on a separate window — May 2023, not
+the live one — because the 2026 North Indian season has produced no storms at
+all. See [Case study: Cyclone Mocha](#-case-study-cyclone-mocha-may-2023).
 
 Validation for the derived layers comes from a seventh dataset,
 `incois_valueadded_products_datasets` on the same INCOIS server — see
@@ -312,6 +319,7 @@ file**, not the window that was requested. Snapshot taken 2026-08-31.
 | CTD casts | 2007-04-06 12:32 | **2025-04-23 13:43** | 5 | 200 |
 | Gliders | 2016-06-30 04:14 | **2022-10-14 04:10** | 7 | 210 |
 | Model field | 2026-02-28 | **2026-07-30** | 8 frames | — |
+| *Cyclone Mocha (separate)* | *2023-04-30* | *2023-05-20* | *3 frames · 51 fixes · 12 floats* | *24* |
 
 All times UTC. These figures move every time the fetchers run; to print the
 current ones rather than trusting this table:
@@ -319,6 +327,7 @@ current ones rather than trusting this table:
 ```bash
 python tools/fetch_instruments.py --check
 python tools/fetch_model.py --check
+python tools/fetch_cyclone.py --check     # the separate May 2023 snapshot
 ```
 
 ### Why three of them are current and two are not
@@ -586,6 +595,149 @@ rather than integrating something with no physical meaning.
 
 ---
 
+## 🌀 Case study: Cyclone Mocha, May 2023
+
+One control in the scene panel — **Cyclone Mocha 2023** — swaps the whole
+snapshot: the May 2023 INCOIS field, the IBTrACS best track, and the twelve Argo
+floats that came nearest the storm. It frames the Bay of Bengal, enables the
+heat layer and the track, and opens on **2023-05-11**, where the run to 145 kt
+begins. Pressing it again restores the live view.
+
+```bash
+python tools/fetch_cyclone.py            # writes js/data/cyclone.json (1.3 MB)
+python tools/fetch_cyclone.py --check    # re-derives the finding from the file
+```
+
+**Why a second snapshot.** The live window is a rolling six months and contains
+no cyclone. That is not a pipeline gap: IBTrACS is current to 2026-08-30 with
+3,272 rows for the season and **zero** in the North Indian basin, which runs
+Apr–Jun and Oct–Dec. A cyclone-heat layer with no cyclone to point at
+demonstrates nothing, so the case study travels to a storm. `argo.json`,
+`model.json` and `instruments.json` are never touched, and `cyclone.json`
+carries its own `model` and `argo` blocks in exactly their schema — entering the
+case study swaps documents rather than adding a second way to read a field.
+
+### The finding: TCHP is a lead, not a diagnosis
+
+The intuitive reading of cyclone heat potential fails on this storm, and the
+failure is the interesting part.
+
+| Framing | Result |
+|---|---|
+| TCHP under the storm **as** it intensified (24 h ending now, RI ≥ 30 kt) | RI steps **42.2** kJ cm⁻² vs **41.1** for every other step. Nothing. |
+| TCHP under the storm vs the **next 24 h** | **r ≈ +0.9**, n = 45 |
+
+Mocha reached its 145 kt peak over TCHP of **25.7 kJ cm⁻²** — downstream, near
+the coast, over the cold wake it had upwelled itself. Anyone building a
+"high heat means strong cyclone" readout would be building a claim this data
+refutes.
+
+Split on the **50 kJ cm⁻² threshold**, taken from the operational literature
+*a priori* and not tuned here:
+
+| Pre-genesis TCHP | Δ intensity over the next 24 h |
+|---|---|
+| ≥ 50 kJ cm⁻² (n = 8) | **+38.5 kt** |
+| < 50 (n = 37) | **−2.2 kt** |
+
+Mocha's corridor peaked at **54.9 kJ cm⁻²**, the **86th percentile** of the
+basin on that frame (median 41.2, max 100.9). This is also how forecasters
+actually use the field: an input for the water *ahead* of the track.
+
+### Two things the analysis has to control for, and does
+
+**The predictor is the pre-genesis frame (2023-04-30), not the nearest one.**
+The INCOIS analysis assimilates the Argo profiles taken around its own frame
+date, so by 2023-05-10 Mocha's cold wake is already inside the field.
+Predicting a storm from an analysis that has absorbed that storm's effect is
+leakage. Sampling the nearest frame instead inflates the corridor by 10–20 kJ
+cm⁻² in exactly the cells the storm had just churned, moves the split from 8/37
+to 31/14, and — because Pearson *r* is invariant under a shift — leaves the
+correlation looking just as good while describing something else.
+
+**The correlation is not just landfall.** Mocha's collapse from 145 kt to 20 kt
+happened over shelf water *and* over Myanmar, and those are two different
+explanations. Excluding every 24-hour window with either end within 200 km of
+land:
+
+| | n | r | ≥ 50 | < 50 |
+|---|---|---|---|---|
+| Full track | 45 | +0.91 | +38.5 kt | −2.2 kt |
+| Landfall-free | 35 | +0.88 | +38.5 kt | **+20.2 kt** |
+
+The separation survives, and it narrows honestly — from a 41 kt gap to 18 kt,
+because the sub-threshold group is no longer carrying the decay.
+
+### Why r is quoted to one decimal
+
+Because the second decimal is not stable. The correlation depends on how each
+fix is paired with the one 24 hours later, and that rule is a judgement call.
+This file pairs each fix with the **nearest fix to t + 24 h**, accepting a gap
+of up to 6 hours (`analysis.pairing` records it). Recomputing the same track
+against the same field, but accepting any partner in a 21–27 h band instead,
+returns **+0.874** where this rule returns **+0.911**.
+
+Both support the same conclusion and neither rule is wrong, so the app states
+**r ≈ +0.9** in the sentence a reader would quote, and carries the exact figure
+and the rule that produced it alongside. A judge who recomputes this with their
+own windowing will land somewhere in 0.87–0.91 — which is the point. The
+finding is robust; the third digit is not, and claiming it would be the one
+attackable number in an otherwise defensible result.
+
+### What the UI is allowed to say
+
+The readout states the mean TCHP over the fixes in the next 24 hours, sampled
+from **the frame on screen** so the number matches the layer under it, with the
+count it averaged and how many fell outside the field:
+
+```
+MOCHA 45 kt at 2023-05-11 06:00
+Water ahead, next 24 h: 65 kJ cm⁻² · above the 50 threshold — favourable for intensification
+mean of 8 fixes ahead · frame 2023-05-10
+Track fix area ∝ wind speed.
+Means, not steps: sub-threshold fixes did intensify.
+```
+
+**"Favourable for intensification", never "will intensify".** The separation is
+in the means, not step by step — one sub-50 step still gained 42 kt. That
+sentence lives in `analysis.caveat` in the JSON, is printed in the control
+panel, is wrapped into the exported PNG's provenance strip, and is asserted
+non-empty by `--check`, so it cannot be dropped by editing one file.
+
+### Track rendering
+
+The best track is a spline through the three-hourly IBTrACS fixes — a cyclone
+genuinely does travel a continuous path, the same reasoning that gives a glider
+a spline and denies a drifting float one. Each fix is an instanced sphere whose
+**area is proportional to wind speed**, stated in the legend rather than left as
+a size scale the viewer has to guess at. The track is drawn white: it is an
+annotation over the heat field, and every value it crosses on the thermal ramp
+is warm, so a red or orange track would vanish into exactly the values it marks.
+
+Fixes outside the rendered region are **dropped, not clamped**. Mocha made
+landfall past the corner of the analysed domain, and five fixes carry
+`tchpPre: null` because the cell under them is land or unanalysed — they are
+excluded from the statistics rather than taking a nearest-edge value.
+
+A storm has no water column, so the cyclone registry entry declares no
+`profileVariables` and clicking it opens no profile panel. That is read off the
+registry, not special-cased by id.
+
+### Reproducing it
+
+`--check` does not trust the file it is validating. It re-derives Pearson *r*
+and both group means from the track as written, recomputes TCHP for every fix
+straight out of the bundled temperature field and requires it to match to
+0.05 kJ cm⁻², asserts the predictor is the earliest frame, and fails if the lag
+framing ever finds zero RI steps in a storm that gained 120 kt — which is
+exactly how a sign error in the intensity difference was caught.
+
+> Best-track data from IBTrACS v04r01, NOAA NCEI. Intensity is `USA_WIND`, the
+> JTWC one-minute sustained wind. IBTrACS ships no per-fix quality flags, so
+> `qc.trackQcFlags` is `false` and the track is range-checked only.
+
+---
+
 ## 🖼️ Export with provenance
 
 **Export** saves the current view as a PNG with a provenance strip composited
@@ -777,14 +929,24 @@ Zero dependencies. Imported by both `utils.js` and `dataService.js` to avoid cir
 
 ```js
 export const DOMAIN = {
-  lonMin: 68, lonMax: 78,   // Longitude range °E
-  latMin: 8,  latMax: 20,   // Latitude range °N
-  depthMin: 0, depthMax: 2000,  // Depth range in metres
+  lonMin: 55, lonMax: 95,     // Full basin extent °E
+  latMin: -10, latMax: 25,    // Straddles equator — prints hemispheres (e.g. 10°S–25°N)
+  depthMin: 0, depthMax: 2000,
 };
 
-export const SCENE_W = 10;  // Three.js scene X span (longitude)
-export const SCENE_D = 12;  // Three.js scene Z span (latitude)
-export const SCENE_H = 10;  // Three.js scene Y span (depth, before exaggeration)
+export const SCENE_SPAN = 14; // Longest horizontal axis in Three.js units
+export const SCENE_H = 10;    // Y span (depth, before exaggeration)
+export let SCENE_W, SCENE_D;  // Computed from VIEW aspect ratio — recomputed on selection
+
+// Operational thresholds for tropical cyclone intensification (Phase 3)
+export const TCHP_THRESHOLD = 50;  // kJ cm⁻²
+export const D26_THRESHOLD  = 50;  // m
+
+export const MIN_SELECTION_DEG = 1.5;  // Smallest selectable side, in degrees
+
+export function setViewBounds(b)  { ... } // Point volume at a sub-region
+export function resetViewBounds() { ... } // Back to full basin
+export function isSubRegion()     { ... } // True when a sub-region is selected
 ```
 
 ---
@@ -796,19 +958,38 @@ export const SCENE_H = 10;  // Three.js scene Y span (depth, before exaggeration
 #### Public API
 
 ```js
-import { getModelField, getInstrumentPlatforms, getProfile, getAllPlatforms, PLUGIN_REGISTRY, VARIABLE_META, DOMAIN } from './dataService.js';
+import {
+  getModelField,           // 3D field for a variable/date/timestep (real or synthetic)
+  getInstrumentPlatforms,  // Platform list for one source type
+  getProfile,              // Depth profile nearest a given model timestep
+  getAllPlatforms,          // Merged list across all registered sources
+  sampleModelColumn,       // Co-located model column at (lat, lon, atTime) — Phase 3
+  isModelVariableReal,     // True when the model carries a real field for a variable
+  whenDataReady,           // Promise: resolves once all JSON files are loaded
+  getModelFrames,          // Array of ISO timestamps the model actually holds
+  getModelLevels,          // Depth array in metres
+  getDataProvenance,       // Provenance/attribution object for the current field
+  getObservationWindow,    // { start, end } of the Argo coverage window
+  setCaseStudy,            // Load/unload the Cyclone Mocha case study snapshot
+  getCaseStudy,            // Return the active case study document | null
+  isCaseStudy,             // True when viewing a case study (not the live field)
+  PLUGIN_REGISTRY,         // Array of sensor-source plugin descriptors
+  VARIABLE_META,           // Display metadata per variable (label, unit, palette, cfName)
+  DOMAIN,                  // Re-exported from constants.js for convenience
+} from './dataService.js';
 
-// Fetch a 3D model field
+// Fetch a 3D model field (returns real INCOIS analysis if model.json is available)
 const field = await getModelField('temperature', '2026-07-30', '06:00');
 
 // Fetch all platforms of one type
 const argoList = await getInstrumentPlatforms('argo');
 
-// Fetch depth profile for a platform
-const profile = await getProfile('2903456');
+// Fetch depth profile nearest the selected model timestep
+const profile = await getProfile('2903456', '2026-07-30T06:00:00Z', 'argo');
 
-// Fetch all registered source types at once
-const allPlatforms = await getAllPlatforms();
+// Co-located model column at the same position for profile comparison (Phase 3)
+const modelCol = sampleModelColumn(profile.lat, profile.lon, '2026-07-30T06:00:00Z');
+// → { real, gridLat, gridLon, depths, time, offsetMs, variables: { temperature, salinity } }
 ```
 
 #### Swapping Mock → Real REST API
@@ -1049,15 +1230,18 @@ These are the exact response shapes the mock returns today and that a real backe
 {
   "variable": "temperature",
   "unit": "°C",
+  "real": true,
   "date": "2026-07-30",
   "timestep": "06:00",
+  "offsetMs": 0,
   "bounds": {
-    "lonMin": 68, "lonMax": 78,
-    "latMin": 8,  "latMax": 20,
+    "lonMin": 55, "lonMax": 95,
+    "latMin": -10, "latMax": 25,
     "depthMin": 0, "depthMax": 2000
   },
-  "grid": { "nx": 40, "ny": 40, "nz": 20 },
-  "values": "Float32Array — length nx×ny×nz, row-major (x, y, z)"
+  "grid": { "nx": 41, "ny": 36, "nz": 24 },
+  "depths": [5, 10, 15, 20, "…", 2000],
+  "values": "Float32Array — length nx×ny×nz, row-major (x, y, z); NaN for land/no-data"
 }
 ```
 
@@ -1354,8 +1538,8 @@ To upgrade Three.js: change the version string in these two URLs only.
 In `js/constants.js`:
 ```js
 export const DOMAIN = {
-  lonMin: 68, lonMax: 78,    // ← Change these for a different region
-  latMin: 8,  latMax: 20,
+  lonMin: 55, lonMax: 95,    // ← Change these for a different region
+  latMin: -10, latMax: 25,
   depthMin: 0, depthMax: 2000,
 };
 ```
@@ -1382,18 +1566,22 @@ unconditional `°N`.
 
 ### Adjusting Grid Resolution
 
-In `js/dataService.js` → `_generateModelField()`:
+The **real** INCOIS gridded field is 41 × 36 × 24 (lon × lat × depth). The grid dimensions come from `model.json` automatically and do not need to be hardcoded anywhere.
+
+If you need to adjust the **synthetic fallback** generator (`_generateModelField()` in `js/dataService.js`):
 ```js
-const nx = 40, ny = 40, nz = 20;   // ← Match your real NetCDF grid dimensions
+const nx = 41, ny = 36, nz = 24;   // ← Match your real NetCDF grid dimensions
 ```
 
 ### Adjusting Scene Scale
 
+`SCENE_W` and `SCENE_D` are computed from `SCENE_SPAN` and the selection's aspect ratio — changing them manually has no effect. `SCENE_H` and `SCENE_SPAN` can be tuned:
+
 In `js/constants.js`:
 ```js
-export const SCENE_W = 10;  // X span in Three.js units (longitude)
-export const SCENE_D = 12;  // Z span in Three.js units (latitude)
-export const SCENE_H = 10;  // Y span in Three.js units (depth, pre-exaggeration)
+export const SCENE_SPAN = 14; // Longest horizontal axis in Three.js units
+export const SCENE_H = 10;    // Y span in Three.js units (depth, pre-exaggeration)
+// SCENE_W and SCENE_D are derived — do not set them directly
 ```
 
 ### Adding a New Color Palette
@@ -1506,6 +1694,8 @@ These are not roadmap items; they work today and each maps to a real workflow.
 |---|---|
 | Depth-resolved temperature volume | Read the **warm layer**, not just SST. Cyclone intensification depends on heat through the upper ocean, so a thin warm skin over cool water and a deep warm layer look identical from satellite SST and behave completely differently |
 | Click-to-profile against the model field | Verify the model where an instrument actually measured. If the float and the model disagree at depth, the forecast inherits that error |
+| **Model vs observation profile overlay** | The observed profile (solid) is drawn beside the co-located model column (dashed) on the same depth axis, so bias and structure are visible at a glance. The model line is truncated to the depth of the observation, and disabled for variables the model does not carry (chlorophyll). The profile re-syncs when the date slider moves |
+| **Live intensification-favourability readout** | Outside the case study, the TCHP key reports what fraction of the visible water meets both criteria for cyclone rapid intensification (TCHP ≥ 50 kJ cm⁻² **and** D26 ≥ 50 m). Gated on real model data: synthetic fallback never generates a bogus claim |
 | Time offset stated on every profile | Prevents the most common false confirmation: reading a model frame and an observation days or years apart as agreement |
 | QC enforcement and honest gaps | A warning issued on a float with a failed conductivity cell is a warning issued on noise |
 | Depth-slice navigation | Inspect the thermocline depth that governs upwelling and mixed-layer response |
@@ -1531,6 +1721,26 @@ absolute difference of 0.018 m over 1,175 co-located cells, the residual being
 the two-decimal rounding applied when the field is written to disk
 (`python tools/fetch_model.py --validate-d26`). What they still need to be
 *operational* is a forecast rather than an analysis of what already happened.
+
+**Live favourability readout** (Phase 3). Outside the case study, the TCHP key
+now reports what fraction of the visible ocean meets *both* criteria for cyclone
+rapid intensification — `TCHP ≥ 50 kJ cm⁻²` **and** `D26 ≥ 50 m` — computed
+inside the existing `_computeTCHP()` loop with no extra pass. The denominator is
+wet cells (cells with finite temperature), not the bounding box, and the entire
+block is gated on `_modelData.real` so synthetic fallback data never generates a
+bogus operational claim. The Cyclone Mocha case-study track-lead readout
+continues to take priority when the case study is active.
+
+**Model vs observation comparison** (Phase 3). Opening any instrument profile
+now overlays the co-located model column — sampled from the uncropped
+`_modelDoc` at the nearest spatial cell and nearest time frame — as a dashed
+line on the same depth-vs-variable canvas. The model is truncated to the max
+depth of the observed profile (so a 200 m glider dive is not squashed), the
+value axis spans both series, the plot area is clipped, and a compact legend
+(`Obs` / `Model`) appears in the chart header. For variables the model does not
+carry (chlorophyll from BGC floats), the overlay is disabled gracefully via
+`isModelVariableReal()`. The profile panel re-opens on date or timestep changes
+so the model comparison stays in sync.
 
 The Bay of Bengal adds a wrinkle the visualisation is well suited to: heavy
 river discharge creates a fresh, buoyant surface layer that suppresses mixing
@@ -1608,6 +1818,8 @@ data that was stale, unadjusted, or quality-flagged.
 - [x] Isosurface extraction (depth-of-threshold surface, D26 preset)
 - [ ] Full marching cubes, for fields that are not monotonic in depth
 - [x] Derived layers: D26 and TCHP
+- [x] Live intensification-favourability readout (TCHP + D26 joint criterion)
+- [x] Model-vs-observation profile overlay (co-located model column on profile chart)
 - [ ] Mixed-layer depth and barrier-layer thickness
 - [ ] WMS basemap overlay
 - [ ] Time interpolation between model frames

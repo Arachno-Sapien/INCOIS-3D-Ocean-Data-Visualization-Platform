@@ -17,11 +17,13 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import State from './state.js';
-import { PLUGIN_REGISTRY, VARIABLE_META, getModelField, getAllPlatforms } from './dataService.js';
+import { PLUGIN_REGISTRY, VARIABLE_META, getModelField, getAllPlatforms,
+         getCaseStudy } from './dataService.js';
 import { latLonDepthToScene, depthToSceneY, seededNoise, generateHeatmapTexture,
          resampleDepthRows, clamp, lerp, valueToColor } from './utils.js';
 import { DOMAIN, VIEW, SCENE_W, SCENE_D, SCENE_H,
-         setViewBounds, resetViewBounds, MIN_SELECTION_DEG } from './constants.js';
+         setViewBounds, resetViewBounds, MIN_SELECTION_DEG,
+         TCHP_THRESHOLD, D26_THRESHOLD } from './constants.js';
 import { buildGlobe, latLonToGlobe, globeToLatLon, GLOBE_R,
          buildLatLonPatch, buildLatLonOutline } from './globe.js';
 
@@ -367,7 +369,7 @@ export async function clearAreaSelection() {
  * SCENE_W/SCENE_D are live bindings, so they already carry the new values by
  * the time this runs; the geometry built from them has to be regenerated.
  */
-async function _rebuildForBounds() {
+async function _rebuildForBounds(animate) {
   if (!_oceanBoxGroup) return;
   scene.remove(_oceanBoxGroup);
   _oceanBoxGroup.traverse(o => { o.geometry?.dispose(); o.material?.dispose(); });
@@ -380,10 +382,14 @@ async function _rebuildForBounds() {
   _buildBathymetryGrid(State.get('verticalExaggeration'));
   _buildWaveSurface();
   await _refreshInstrumentMarkers();
-  _applyViewMode(State.get('viewMode'), true);
+  // Snapping is right for a drag: the user chose the box and is looking at it.
+  // The case study chooses the box FOR them, so it asks for the flight instead
+  // — the transition is what explains that the view just moved to the Bay of
+  // Bengal, exactly as it does between the globe and the volume.
+  _applyViewMode(State.get('viewMode'), !animate);
 }
 
-export function rebuildForBounds() { return _rebuildForBounds(); }
+export function rebuildForBounds(animate) { return _rebuildForBounds(animate); }
 
 /** Advance an in-progress camera flight. Called once per frame. */
 function _tickCamFlight(dt) {
@@ -905,6 +911,8 @@ async function _refreshInstrumentMarkers() {
     // Tracks
     if (regEntry.trackStyle === 'spline' && platform.track?.length > 1) {
       _buildGliderTrack(platform, regEntry.markerColor, EXAG);
+    } else if (regEntry.trackStyle === 'cyclone' && platform.track?.length > 1) {
+      _buildCycloneTrack(platform, regEntry.markerColor, EXAG);
     } else if (regEntry.trackStyle === 'link' && platform.track?.length > 1) {
       _buildFloatTrack(platform, regEntry.markerColor, EXAG);
     }
@@ -963,6 +971,62 @@ function _buildGliderTrack(platform, colorHex, exag) {
   const line = new THREE.Line(geo, mat);
   line.userData = { platform };   // so layer toggles hide the track with its marker
   _markerGroup.add(line);
+}
+
+/**
+ * Cyclone best track: a spline through the fixes, with each fix scaled by wind.
+ *
+ * Wind carries size and nothing else. Colouring the fixes by intensity would
+ * put a second, unlabelled colour scale over a field that already has one — and
+ * this track lies on top of the TCHP layer, whose whole value is that a colour
+ * means the same number everywhere.
+ *
+ * Sizes run sqrt of wind, matching the current glyphs: a linear map makes a
+ * 25 kt depression invisible beside a 145 kt fix, which is the half of the
+ * track where the intensification actually starts.
+ *
+ * Fixes outside the rendered region are dropped rather than clamped. Mocha made
+ * landfall past the corner of the domain, and drawing that on the boundary
+ * would put the storm somewhere it never was.
+ */
+function _buildCycloneTrack(platform, colorHex, exag) {
+  const inView = platform.track.filter(p =>
+    p.lat >= VIEW.latMin && p.lat <= VIEW.latMax &&
+    p.lon >= VIEW.lonMin && p.lon <= VIEW.lonMax);
+  if (inView.length < 2) return;
+
+  const colour = new THREE.Color(colorHex);
+  const pts = inView.map(p => {
+    const s = latLonDepthToScene(p.lat, p.lon, 0, exag);
+    // Above the TCHP sheet at y = 0.45, or the track is buried by the layer
+    // it exists to be read against.
+    return new THREE.Vector3(s.x, 0.62, s.z);
+  });
+
+  const curve = new THREE.CatmullRomCurve3(pts);
+  const line = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints(curve.getPoints(pts.length * 4)),
+    new THREE.LineBasicMaterial({ color: colour, transparent: true, opacity: 0.85 }));
+  line.userData = { platform };
+  line.renderOrder = 4;
+  _markerGroup.add(line);
+
+  const winds = inView.map(p => Math.max(0, p.windKt || 0));
+  const wMax = Math.max(...winds, 1);
+  const geo = new THREE.SphereGeometry(1, 10, 10);
+  const inst = new THREE.InstancedMesh(
+    geo,
+    new THREE.MeshBasicMaterial({ color: colour, transparent: true, opacity: 0.9 }),
+    pts.length);
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), scl = new THREE.Vector3();
+  pts.forEach((p, i) => {
+    const r = 0.05 + 0.20 * Math.sqrt(winds[i] / wMax);
+    inst.setMatrixAt(i, m.compose(p, q, scl.set(r, r, r)));
+  });
+  inst.instanceMatrix.needsUpdate = true;
+  inst.userData = { platform };   // so the layer toggle hides fixes with the line
+  inst.renderOrder = 4;
+  _markerGroup.add(inst);
 }
 
 // ---------------------------------------------------------------------------
@@ -1296,6 +1360,7 @@ function _computeTCHP() {
   // the top hundred metres where a mean step is twenty times too thick.
   const depths = _depths();
   let min = Infinity, max = -Infinity;
+  let wet = 0, nFavourable = 0;
 
   for (let iy = 0; iy < ny; iy++) {
     for (let ix = 0; ix < nx; ix++) {
@@ -1306,10 +1371,13 @@ function _computeTCHP() {
       // heat, which is a reading a viewer has no way to distinguish.
       if (!Number.isFinite(surf)) { out[col] = NaN; continue; }
 
+      wet++;
+
       // The shallowest level is 5 m, not 0. That water is inside the mixed
       // layer, so it is counted at the top level's temperature rather than
       // discarded — a few percent of a ~100 m warm layer, not a rounding error.
       let joules = surf > T_REF ? RHO * CP * (surf - T_REF) * depths[0] : 0;
+      let d26 = surf > T_REF ? depths[0] : 0;
 
       for (let iz = 0; iz < nz - 1; iz++) {
         const a = values[iz * ny * nx + col];
@@ -1318,7 +1386,10 @@ function _computeTCHP() {
         // is false, so the old form did not fire on a hole and let NaN into the
         // running total, which then reached the colour lookup and threw.
         if (!(a > T_REF)) break;                  // at or below D26, or no data
-        if (!Number.isFinite(b)) break;           // seafloor between two levels
+        if (!Number.isFinite(b)) {
+          d26 = depths[iz];
+          break;                                  // seafloor between two levels
+        }
         // Trapezoid over the part of the layer that is still above 26 degC
         const dz = depths[iz + 1] - depths[iz];
         const frac = b >= T_REF ? 1 : (a - T_REF) / (a - b);
@@ -1326,18 +1397,115 @@ function _computeTCHP() {
           ? ((a - T_REF) + (b - T_REF)) / 2
           : (a - T_REF) / 2;
         joules += RHO * CP * meanExcess * dz * frac;
-        if (b < T_REF) break;
+        if (b < T_REF) {
+          d26 = depths[iz] + dz * frac;
+          break;
+        } else {
+          d26 = depths[iz + 1];
+        }
       }
       const kJcm2 = joules / 1e7;                 // J m-2 -> kJ cm-2
       out[col] = kJcm2;
       if (kJcm2 < min) min = kJcm2;
       if (kJcm2 > max) max = kJcm2;
+
+      // Both criteria required: high heat content AND a deep enough warm layer
+      if (kJcm2 >= TCHP_THRESHOLD && d26 >= D26_THRESHOLD) {
+        nFavourable++;
+      }
     }
   }
   // Every column masked: nothing to report, and Infinity in the readout is
   // worse than an absent one.
   if (!Number.isFinite(min)) return null;
-  return { values: out, nx, ny, min, max };
+  return {
+    values: out, nx, ny, min, max,
+    wet, nFavourable,
+    favourableCoverage: wet > 0 ? nFavourable / wet : 0,
+    ofWater: wet > 0 && wet < nx * ny,
+    real: !!_modelData.real,
+  };
+}
+
+/**
+ * Cell index in the cropped field for a position, or null when it is outside.
+ *
+ * Nearest cell, never an interpolation between cells: the field is magnified
+ * nearest-neighbour on screen, so a sampled number has to be the number the
+ * viewer can see under the marker.
+ */
+function _cellIndexAt(lat, lon) {
+  const lons = _modelData?.lons, lats = _modelData?.lats;
+  if (!lons || !lats) return null;
+  const dx = lons.length > 1 ? lons[1] - lons[0] : 1;
+  const dy = lats.length > 1 ? lats[1] - lats[0] : 1;
+  if (lon < lons[0] - dx / 2 || lon > lons[lons.length - 1] + dx / 2) return null;
+  if (lat < lats[0] - dy / 2 || lat > lats[lats.length - 1] + dy / 2) return null;
+  let ix = 0, iy = 0;
+  for (let i = 1; i < lons.length; i++)
+    if (Math.abs(lons[i] - lon) < Math.abs(lons[ix] - lon)) ix = i;
+  for (let i = 1; i < lats.length; i++)
+    if (Math.abs(lats[i] - lat) < Math.abs(lats[iy] - lat)) iy = i;
+  return iy * lons.length + ix;
+}
+
+/**
+ * The heat content the storm is about to cross, not the heat under it.
+ *
+ * This is the whole point of the case study. TCHP under a cyclone at the moment
+ * it intensifies separates nothing — Mocha peaked at 145 kt over 26 kJ cm-2,
+ * near the coast, over the cold wake it had upwelled itself. The same field
+ * read as a LEAD, against what the storm does over the following 24 hours,
+ * separates cleanly, and it is how the field is used operationally: a statement
+ * about the water ahead of the track.
+ *
+ * Sampled from the frame currently on screen, so the number in the readout is
+ * the number in the layer beneath it. Fixes ahead that fall outside the
+ * rendered region or over an unanalysed cell are counted, not silently skipped:
+ * a mean over two of eight positions is a different claim from a mean over
+ * eight.
+ */
+function _tchpLead(t) {
+  const cs = getCaseStudy();
+  const track = cs?.track;
+  if (!track?.length) return null;
+
+  const now = Date.parse(_modelTimeISO());
+  if (!Number.isFinite(now)) return null;
+  const at = track.reduce((best, cur) =>
+    Math.abs(Date.parse(cur.time) - now) < Math.abs(Date.parse(best.time) - now) ? cur : best);
+
+  const from = Date.parse(at.time);
+  const hours = cs.analysis?.leadHours ?? 24;
+  const ahead = track.filter(p => {
+    const dt = (Date.parse(p.time) - from) / 3600000;
+    return dt > 0 && dt <= hours;
+  });
+  if (!ahead.length) return null;   // the storm has run out of track to cross
+
+  let sum = 0, n = 0, missing = 0;
+  for (const p of ahead) {
+    const k = _cellIndexAt(p.lat, p.lon);
+    const v = k === null ? NaN : t.values[k];
+    if (Number.isFinite(v)) { sum += v; n++; } else missing++;
+  }
+  if (!n) return null;
+
+  const mean = sum / n;
+  const threshold = cs.analysis?.thresholdKJcm2 ?? TCHP_THRESHOLD;
+  return {
+    storm: cs.storm.name,
+    fixTime: at.time,
+    offsetMs: from - now,
+    windKt: at.windKt,
+    hours,
+    meanTchp: mean,
+    nSampled: n,
+    nMissing: missing,
+    threshold,
+    above: mean >= threshold,
+    frame: _modelData?.time || null,
+  };
 }
 
 function _buildTCHPLayer() {
@@ -1349,7 +1517,20 @@ function _buildTCHPLayer() {
     layers.tchp = null;
   }
   const t = _computeTCHP();
-  State.set('tchpStats', t ? { min: t.min, max: t.max, unit: 'kJ cm⁻²' } : null);
+  State.set('tchpStats', t
+    ? {
+        min: t.min, max: t.max, unit: 'kJ cm⁻²',
+        lead: _tchpLead(t),
+        favourable: t.real ? {
+          coverage: t.favourableCoverage,
+          nFavourable: t.nFavourable,
+          wet: t.wet,
+          ofWater: t.ofWater,
+          thresholdTchp: TCHP_THRESHOLD,
+          thresholdD26: D26_THRESHOLD,
+        } : null,
+      }
+    : null);
   if (!t) return;
 
   // Fixed 0-160 kJ cm-2 scale, NOT auto-scaled to this frame: the ~50-60
